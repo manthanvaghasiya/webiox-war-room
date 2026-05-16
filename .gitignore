@@ -24,14 +24,18 @@
 .DS_Store
 *.pem
 
+# local secrets / scratch — never commit
+keys.txt
+
 # debug
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
+# env files — local env stays out, .env.example is committed for reference
+.env
+.env*.local
 
 # vercel
 .vercel
