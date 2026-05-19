@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { formatDistanceToNow } from "date-fns";
-import { Check, ExternalLink, Info } from "lucide-react";
+import { Check, Copy, ExternalLink, Info } from "lucide-react";
 
 import { createClient } from "@/lib/supabase/client";
 import { AgentActionInline } from "@/components/dashboard/agent-action-buttons";
@@ -110,8 +110,44 @@ function AddressCell({
   );
 }
 
-// Why cell — solution_reason is primary; if research_note exists and differs,
-// an ⓘ toggle reveals the raw enrichment note.
+// Why cell — solution_reason is primary; if research_note contains call scripts
+// (delimited by ---CALL SCRIPT markers), parse them into tabbed view.
+// The table column shows only the summary (text before the first marker).
+
+type ParsedCallScript = {
+  label: string;
+  body: string;
+};
+
+function parseCallScripts(note: string): {
+  summary: string;
+  scripts: ParsedCallScript[];
+} {
+  const marker = "---CALL SCRIPT";
+  const idx = note.indexOf(marker);
+  if (idx === -1) return { summary: note, scripts: [] };
+
+  const summary = note.slice(0, idx).trim();
+  const rest = note.slice(idx);
+
+  // Split on each ---CALL SCRIPT ... --- line
+  const parts = rest.split(/---CALL SCRIPT\s*/).filter(Boolean);
+  const scripts: ParsedCallScript[] = [];
+
+  for (const part of parts) {
+    // Each part looks like: "(Hinglish)---\n...body..."
+    const headerEnd = part.indexOf("---");
+    if (headerEnd === -1) continue;
+    const label = part.slice(0, headerEnd).replace(/[()]/g, "").trim();
+    const body = part.slice(headerEnd + 3).trim();
+    if (label && body) {
+      scripts.push({ label, body });
+    }
+  }
+
+  return { summary, scripts };
+}
+
 function WhyCell({
   reason,
   researchNote,
@@ -121,6 +157,36 @@ function WhyCell({
 }) {
   const [showNote, setShowNote] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [activeTab, setActiveTab] = useState(0);
+  const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+
+  const parsed = useMemo(
+    () => (researchNote ? parseCallScripts(researchNote) : null),
+    [researchNote],
+  );
+  const hasScripts = !!parsed && parsed.scripts.length > 0;
+
+  const copyScript = async (idx: number) => {
+    if (!parsed?.scripts[idx]) return;
+    try {
+      await navigator.clipboard.writeText(parsed.scripts[idx].body);
+      setCopiedIdx(idx);
+      setTimeout(() => setCopiedIdx(null), 1500);
+    } catch {
+      // clipboard blocked
+    }
+  };
+
+  const copyAll = async () => {
+    if (!researchNote) return;
+    try {
+      await navigator.clipboard.writeText(researchNote);
+      setCopiedIdx(-1);
+      setTimeout(() => setCopiedIdx(null), 1500);
+    } catch {
+      // clipboard blocked
+    }
+  };
 
   if (!reason && !researchNote) {
     return (
@@ -130,7 +196,8 @@ function WhyCell({
     );
   }
 
-  const primary = reason ?? researchNote ?? "";
+  // Use summary from parsed scripts if available, otherwise fall back to reason
+  const primary = reason ?? parsed?.summary ?? researchNote ?? "";
   const hasExtraNote =
     !!researchNote && researchNote.trim() !== (reason ?? "").trim();
   const needsTrim = primary.length > 90;
@@ -156,8 +223,8 @@ function WhyCell({
           <button
             type="button"
             onClick={() => setShowNote((v) => !v)}
-            aria-label="Show enrichment note"
-            title="Show enrichment note"
+            aria-label="Show call script"
+            title={hasScripts ? "Show call scripts" : "Show enrichment note"}
             className="mt-0.5 shrink-0 text-[color:var(--color-text-muted)] transition hover:text-[color:var(--color-neon-green)]"
           >
             <Info className="size-3" />
@@ -165,8 +232,86 @@ function WhyCell({
         ) : null}
       </div>
       {showNote && hasExtraNote ? (
-        <div className="rounded border border-[color:var(--color-border-base)] bg-[color:var(--color-bg-base)]/70 px-2 py-1 font-mono text-[9px] leading-snug whitespace-pre-wrap text-[color:var(--color-text-muted)]">
-          {researchNote}
+        <div className="space-y-1.5 rounded border border-[color:var(--color-border-base)] bg-[color:var(--color-bg-base)]/70 px-2 py-1.5">
+          {hasScripts ? (
+            <>
+              {/* Summary line */}
+              {parsed!.summary && (
+                <div className="font-mono text-[9px] leading-snug text-[color:var(--color-text-muted)]">
+                  {parsed!.summary}
+                </div>
+              )}
+              {/* Language tabs */}
+              <div className="flex gap-1">
+                {parsed!.scripts.map((s, i) => (
+                  <button
+                    key={s.label}
+                    type="button"
+                    onClick={() => setActiveTab(i)}
+                    className={
+                      "rounded px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider transition " +
+                      (activeTab === i
+                        ? "bg-[color:var(--color-neon-green)]/20 text-[color:var(--color-neon-green)]"
+                        : "text-[color:var(--color-text-muted)] hover:text-[color:var(--color-text-secondary)]")
+                    }
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+              {/* Active script body */}
+              {parsed!.scripts[activeTab] && (
+                <div className="font-mono text-[9px] leading-snug whitespace-pre-wrap text-[color:var(--color-text-secondary)] max-h-[200px] overflow-y-auto rounded bg-[color:var(--color-bg-elevated)]/50 p-2">
+                  {parsed!.scripts[activeTab].body}
+                </div>
+              )}
+              {/* Copy buttons */}
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  onClick={() => copyScript(activeTab)}
+                  className="inline-flex items-center gap-1 rounded border border-[color:var(--color-border-base)] px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-[color:var(--color-text-secondary)] transition hover:border-[color:var(--color-neon-green)] hover:text-[color:var(--color-neon-green)]"
+                >
+                  {copiedIdx === activeTab ? (
+                    <Check className="size-2.5" />
+                  ) : (
+                    <Copy className="size-2.5" />
+                  )}
+                  {copiedIdx === activeTab ? "Copied" : `Copy ${parsed!.scripts[activeTab]?.label ?? "Script"}`}
+                </button>
+                <button
+                  type="button"
+                  onClick={copyAll}
+                  className="inline-flex items-center gap-1 rounded border border-[color:var(--color-border-base)] px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-[color:var(--color-text-secondary)] transition hover:border-[color:var(--color-neon-purple)] hover:text-[color:var(--color-neon-purple)]"
+                >
+                  {copiedIdx === -1 ? (
+                    <Check className="size-2.5" />
+                  ) : (
+                    <Copy className="size-2.5" />
+                  )}
+                  {copiedIdx === -1 ? "Copied" : "Copy All"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="font-mono text-[9px] leading-snug whitespace-pre-wrap text-[color:var(--color-text-muted)]">
+                {researchNote}
+              </div>
+              <button
+                type="button"
+                onClick={copyAll}
+                className="inline-flex items-center gap-1 rounded border border-[color:var(--color-border-base)] px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-[color:var(--color-text-secondary)] transition hover:border-[color:var(--color-neon-green)] hover:text-[color:var(--color-neon-green)]"
+              >
+                {copiedIdx === -1 ? (
+                  <Check className="size-2.5" />
+                ) : (
+                  <Copy className="size-2.5" />
+                )}
+                {copiedIdx === -1 ? "Copied" : "Copy Note"}
+              </button>
+            </>
+          )}
         </div>
       ) : null}
     </div>

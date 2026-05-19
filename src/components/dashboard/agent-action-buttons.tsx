@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import {
   Crosshair,
+  Flame,
   Repeat,
   Rocket,
   Send,
@@ -16,32 +17,48 @@ import {
   triggerFollowupSpecialist,
   triggerLeadQualifier,
   triggerLeadScout,
+  triggerLeadScoutReal,
   triggerPersonalizer,
 } from "@/app/(dashboard)/actions";
 import type { AgentName } from "@/types/database";
 
 type AgentAction = {
-  id: AgentName;
+  id: string; // unique action id (may differ from the agent it maps to)
+  agent: AgentName; // agent whose sidebar state this action drives
   label: string;
   sublabel: string;
   successToast: string;
   action: () => Promise<{ ok: true }>;
   icon: LucideIcon;
   color: string;
+  glow?: boolean; // render a neon glow to highlight a hero action
 };
 
 const AGENT_ACTIONS: AgentAction[] = [
   {
-    id: "lead_scout",
-    label: "Initiate Lead Scout",
-    sublabel: "Find new leads",
-    successToast: "🟢 Lead Scout dispatched",
+    id: "lead_scout_demo",
+    agent: "lead_scout",
+    label: "Demo Scout",
+    sublabel: "Generate 15 fake leads",
+    successToast: "🟢 Demo Scout dispatched",
     action: triggerLeadScout,
     icon: Rocket,
-    color: "var(--color-neon-green)",
+    color: "#7a9590",
+  },
+  {
+    id: "lead_scout_real",
+    agent: "lead_scout",
+    label: "🔥 Hunt Real Gujarat Leads",
+    sublabel: "Car dealers, ≥100 reviews",
+    successToast: "🔥 Real Lead Scout dispatched — this can take 1-3 min",
+    action: triggerLeadScoutReal,
+    icon: Flame,
+    color: "#00ff88",
+    glow: true,
   },
   {
     id: "data_enricher",
+    agent: "data_enricher",
     label: "Initiate Data Enricher",
     sublabel: "Verify & enrich data",
     successToast: "🟢 Data Enricher dispatched",
@@ -51,6 +68,7 @@ const AGENT_ACTIONS: AgentAction[] = [
   },
   {
     id: "lead_qualifier",
+    agent: "lead_qualifier",
     label: "Initiate Lead Qualifier",
     sublabel: "Score & qualify leads",
     successToast: "🟢 Lead Qualifier dispatched",
@@ -60,6 +78,7 @@ const AGENT_ACTIONS: AgentAction[] = [
   },
   {
     id: "personalizer",
+    agent: "personalizer",
     label: "Launch Outreach Campaign",
     sublabel: "Write, translate & send (demo)",
     successToast: "🟢 Outreach campaign launched",
@@ -69,6 +88,7 @@ const AGENT_ACTIONS: AgentAction[] = [
   },
   {
     id: "followup_specialist",
+    agent: "followup_specialist",
     label: "Run Follow-ups Now",
     sublabel: "Send 3/7/14-day follow-ups",
     successToast: "🟡 Follow-up Specialist dispatched",
@@ -113,10 +133,15 @@ function AgentActionButton({ action }: { action: AgentAction }) {
       type="button"
       onClick={onClick}
       disabled={dispatching}
-      className="group flex min-w-[230px] flex-col items-start gap-1 rounded-md border px-4 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-70"
+      className="group flex min-w-[230px] flex-col items-start gap-1 rounded-md border px-4 py-3 text-left transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70"
       style={{
         borderColor: action.color,
-        backgroundColor: "color-mix(in srgb, var(--color-bg-elevated) 70%, transparent)",
+        backgroundColor: action.glow
+          ? `color-mix(in srgb, ${action.color} 14%, var(--color-bg-elevated))`
+          : "color-mix(in srgb, var(--color-bg-elevated) 70%, transparent)",
+        boxShadow: action.glow
+          ? `0 0 22px color-mix(in srgb, ${action.color} 45%, transparent)`
+          : undefined,
       }}
     >
       <span className="flex items-center gap-2">
@@ -152,7 +177,9 @@ export function AgentActionInline({
   const [dispatching, setDispatching] = useState(false);
   const [, startTransition] = useTransition();
 
-  const action = AGENT_ACTIONS.find((a) => a.id === agentId);
+  // Match by mapped agent — multiple actions can share one agent (e.g. the
+  // demo + real Lead Scout). The first match (demo) is the inline default.
+  const action = AGENT_ACTIONS.find((a) => a.agent === agentId);
   if (!action) return null;
   const Icon = action.icon;
 

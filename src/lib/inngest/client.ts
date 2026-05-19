@@ -8,8 +8,10 @@ import { Inngest, eventType, staticSchema } from "inngest";
 export const leadScoutEvent = eventType("agent/lead_scout.run", {
   schema: staticSchema<{
     user_id?: string;
-    mode?: "demo" | "apollo" | "google";
-    limit?: number;
+    mode?: "demo" | "real";
+    vertical?: string; // e.g. 'car_dealer' — only used in real mode
+    cities?: string[]; // default: all 4 Gujarat cities
+    limit?: number; // default: 10 in real mode
   }>(),
 });
 

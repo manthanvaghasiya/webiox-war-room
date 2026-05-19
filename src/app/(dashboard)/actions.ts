@@ -28,6 +28,23 @@ export async function triggerLeadScout() {
   return { ok: true as const };
 }
 
+// Real Lead Scout — hunts live Gujarat businesses via Google Places + Facebook
+// Ad Library. Can run 1-3 min server-side; the UI just fires and forgets.
+export async function triggerLeadScoutReal() {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) throw new Error("Not authenticated");
+
+  await inngest.send({
+    name: leadScoutEvent.name,
+    data: { user_id: user.id, mode: "real", vertical: "car_dealer", limit: 10 },
+  });
+
+  return { ok: true as const };
+}
+
 export async function triggerDataEnricher() {
   const supabase = await createClient();
   const {
