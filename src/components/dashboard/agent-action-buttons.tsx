@@ -5,7 +5,6 @@ import {
   Crosshair,
   Flame,
   Repeat,
-  Rocket,
   Send,
   ShieldCheck,
   type LucideIcon,
@@ -16,7 +15,6 @@ import {
   triggerDataEnricher,
   triggerFollowupSpecialist,
   triggerLeadQualifier,
-  triggerLeadScout,
   triggerLeadScoutReal,
   triggerPersonalizer,
 } from "@/app/(dashboard)/actions";
@@ -35,16 +33,6 @@ type AgentAction = {
 };
 
 const AGENT_ACTIONS: AgentAction[] = [
-  {
-    id: "lead_scout_demo",
-    agent: "lead_scout",
-    label: "Demo Scout",
-    sublabel: "Generate 15 fake leads",
-    successToast: "🟢 Demo Scout dispatched",
-    action: triggerLeadScout,
-    icon: Rocket,
-    color: "#7a9590",
-  },
   {
     id: "lead_scout_real",
     agent: "lead_scout",
@@ -177,8 +165,7 @@ export function AgentActionInline({
   const [dispatching, setDispatching] = useState(false);
   const [, startTransition] = useTransition();
 
-  // Match by mapped agent — multiple actions can share one agent (e.g. the
-  // demo + real Lead Scout). The first match (demo) is the inline default.
+  // Match by mapped agent — the first action mapped to this agent is used.
   const action = AGENT_ACTIONS.find((a) => a.agent === agentId);
   if (!action) return null;
   const Icon = action.icon;
