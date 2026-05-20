@@ -6,11 +6,11 @@ import {
   GUJARAT_CITIES,
   VERTICALS,
   buildCallScript,
-  checkRunningFacebookAds,
   filterPremium,
-  scoreLead,
   searchPlacesForVertical,
+  stackSignals,
   type PlacesRaw,
+  type SignalScore,
 } from "@/lib/agents/google-places-helpers";
 import type {
   LeadChannel,
@@ -472,76 +472,129 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
         allRaw.push(...filtered);
       }
 
-      // Sort by review count DESC, take top (maxResults × 2) for ad-checking.
+      // Sort by review count DESC, take top (maxResults × 2) for signal-stacking.
       allRaw.sort(
         (a, b) => (b.userRatingCount ?? 0) - (a.userRatingCount ?? 0),
       );
       const candidates = allRaw.slice(0, maxResults * 2);
 
-      // Check ads sequentially — 8s timeout each, ~2 min worst case for 20.
-      const enriched: Array<{
-        raw: PlacesRaw;
-        city: string;
-        runningAds: boolean;
-        multiLoc: boolean;
-        score: number;
-        reasoning: string;
-      }> = [];
-
-      for (const raw of candidates) {
-        const businessName = raw.displayName?.text ?? "";
-        const city = (raw as PlacesRaw & { __city?: string }).__city ?? "";
-
-        // Multi-location detection — same brand keyword in 2+ results.
-        const brandKey = businessName
+      // Multi-location heuristic — same brand keyword across 2+ candidates.
+      // Used downstream to bias the recommended_solution toward custom software
+      // for businesses likely to need it.
+      const isMultiLoc = (raw: PlacesRaw): boolean => {
+        const name = raw.displayName?.text ?? "";
+        const brandKey = name
           .split(/[(,–-]/)[0]
           .trim()
           .toLowerCase()
           .slice(0, 12);
-        const sameBrandCount = brandKey
-          ? allRaw.filter((r) =>
-              (r.displayName?.text ?? "").toLowerCase().includes(brandKey),
-            ).length
-          : 1;
-        const multiLoc = sameBrandCount >= 2;
+        if (!brandKey) return false;
+        const sameBrandCount = allRaw.filter((r) =>
+          (r.displayName?.text ?? "").toLowerCase().includes(brandKey),
+        ).length;
+        return sameBrandCount >= 2;
+      };
 
-        await ctx.log(`Checking ads: ${businessName}`, {
-          action: "ad_check",
-          metadata: { business: businessName },
+      // Run all 8 signal checks per candidate (8s timeout per network call).
+      // Weak-tier leads are filtered out here — they never reach the DB.
+      const enriched: Array<{
+        raw: PlacesRaw;
+        city: string;
+        multiLoc: boolean;
+        signals: SignalScore;
+      }> = [];
+
+      for (const raw of candidates) {
+        const city = (raw as PlacesRaw & { __city?: string }).__city ?? "";
+        const businessName = raw.displayName?.text ?? "Unknown";
+
+        await ctx.log(`Stacking signals: ${businessName}`, {
+          action: "signals_check",
+          metadata: { business: businessName, city },
         });
-        const runningAds = await checkRunningFacebookAds(businessName, city);
 
-        const { score, reasoning } = scoreLead({
+        const signals = await stackSignals({
           raw,
-          hasWebsite: !!raw.websiteUri,
-          runningAds,
-          hasMultipleLocations: multiLoc,
+          city,
           vertical: verticalId,
+          excludeFranchises,
+          minReviews,
+          minRating,
         });
 
-        enriched.push({ raw, city, runningAds, multiLoc, score, reasoning });
+        if (signals.tier === "weak") {
+          await ctx.log(
+            `Skipped ${businessName}: weak signal (${signals.confidence}%)`,
+            {
+              action: "lead_skipped",
+              level: "info",
+              metadata: {
+                confidence: signals.confidence,
+                reasoning: signals.reasoning.join(" | "),
+              },
+            },
+          );
+          continue;
+        }
+
+        enriched.push({
+          raw,
+          city,
+          multiLoc: isMultiLoc(raw),
+          signals,
+        });
       }
 
-      // Sort: when prioritizeNoWebsite is on, NO-WEBSITE leads come first
-      // (easiest pitch), with score breaking ties. Otherwise pure score order.
-      if (prioritizeNoWebsite) {
-        enriched.sort((a, b) => {
+      // Tier first (confirmed > probable), confidence breaks the tie.
+      // When prioritizeNoWebsite is on, NO-WEBSITE leads float to the top of
+      // each tier — easier pitch.
+      enriched.sort((a, b) => {
+        if (a.signals.tier !== b.signals.tier) {
+          return a.signals.tier === "confirmed" ? -1 : 1;
+        }
+        if (prioritizeNoWebsite) {
           const aNoSite = !a.raw.websiteUri ? 1 : 0;
           const bNoSite = !b.raw.websiteUri ? 1 : 0;
           if (aNoSite !== bNoSite) return bNoSite - aNoSite;
-          return b.score - a.score;
-        });
-      } else {
-        enriched.sort((a, b) => b.score - a.score);
-      }
+        }
+        return b.signals.confidence - a.signals.confidence;
+      });
+
       // Caller limit wins, falling back to the user's max_results_per_run.
       // Hard cap of 100 keeps a runaway setting from blowing up a run.
       const top = enriched.slice(0, Math.min(opts.limit ?? maxResults, 100));
 
-      await ctx.log(`Top ${top.length} hot leads selected`, {
-        action: "top_selected",
-        metadata: { count: top.length },
-      });
+      const confirmedCount = top.filter(
+        (e) => e.signals.tier === "confirmed",
+      ).length;
+      const probableCount = top.filter(
+        (e) => e.signals.tier === "probable",
+      ).length;
+
+      await ctx.log(
+        `Top ${top.length} leads (${confirmedCount} confirmed · ${probableCount} probable) selected; weak filtered out`,
+        {
+          action: "top_selected",
+          metadata: {
+            count: top.length,
+            confirmed: confirmedCount,
+            probable: probableCount,
+          },
+        },
+      );
+
+      // Build a compact 8-signal checklist for the research note.
+      const signalsChecklist = (s: SignalScore): string =>
+        [
+          `${s.has_good_rating ? "✓" : "✗"} Rating ≥ threshold`,
+          `${s.has_review_volume ? "✓" : "✗"} Review volume ≥ threshold`,
+          `${s.has_working_phone ? "✓" : "✗"} Phone available`,
+          `${s.not_franchise ? "✓" : "✗"} Independent (not franchise)`,
+          `${s.has_recent_reviews ? "✓" : "✗"} Recent reviews (<60d)`,
+          `${s.running_paid_ads ? "✓" : "✗"} Running paid ads`,
+          `${s.has_instagram ? "✓" : "✗"} Active on Instagram`,
+          `${s.has_verified_email ? "✓" : "✗"} Verified email (Hunter)`,
+        ].join("\n");
 
       // Insert into the leads table — idempotent via the (user_id, company)
       // unique index.
@@ -549,6 +602,18 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
       for (const e of top) {
         const raw = e.raw;
         const name = raw.displayName?.text ?? "Unknown";
+        const hasWebsite = !!raw.websiteUri;
+
+        // Dual-offering recommendation. Multi-location / high-volume leads
+        // are biased toward custom software (CRM/automation) since their
+        // operational pain compounds with scale; no-website leads start at
+        // the bundled "multi" pitch since the website work is unmissable.
+        let recommended: SolutionType = "multi";
+        if (hasWebsite) {
+          if (e.multiLoc || (raw.userRatingCount ?? 0) >= 500) {
+            recommended = verticalId === "clinic" ? "crm" : "automation";
+          }
+        }
 
         // Pre-generate the call script and fold it into research_note so the
         // /leads page can surface + copy it without an extra fetch.
@@ -557,13 +622,24 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
           contactName: "Owner",
           city: e.city,
           vertical: verticalId,
-          reasoning: e.reasoning,
-          has_website: !!raw.websiteUri,
-          running_ads: e.runningAds,
+          reasoning: e.signals.reasoning.join(" • "),
+          has_website: hasWebsite,
+          running_ads: e.signals.running_paid_ads,
+          has_instagram: e.signals.has_instagram,
           rating: raw.rating,
           reviews: raw.userRatingCount,
         });
-        const summary = `Google Places lead. ${e.runningAds ? "RUNNING ADS 🔥" : "No ads detected"}${e.multiLoc ? " • Multi-location brand" : ""}`;
+
+        const tierUp = e.signals.tier.toUpperCase();
+        const reasoningJoined = e.signals.reasoning.join(" • ");
+        const summary =
+          `TIER: ${tierUp}\n` +
+          `CONFIDENCE: ${e.signals.confidence}%\n` +
+          `SIGNALS:\n${signalsChecklist(e.signals)}\n` +
+          `INSTAGRAM: ${e.signals.instagram_url ?? "none"}\n` +
+          `LATEST REVIEW: ${e.signals.latest_review_date ?? "unknown"}` +
+          (e.multiLoc ? "\nMULTI-LOCATION: yes" : "");
+
         const researchNote = [
           summary,
           "",
@@ -599,12 +675,10 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
           preferred_language: "gujarati" as const,
           status: "new" as const,
           source: "google_places",
-          lead_score: e.score,
-          lead_score_reason: e.reasoning,
-          recommended_solution: (raw.websiteUri
-            ? "multi"
-            : "website") as SolutionType,
-          solution_reason: e.reasoning,
+          lead_score: e.signals.confidence,
+          lead_score_reason: `${tierUp} — ${reasoningJoined}`,
+          recommended_solution: recommended,
+          solution_reason: reasoningJoined,
           research_note: researchNote,
         };
 
@@ -618,15 +692,18 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
         if (!error) {
           inserted++;
           await ctx.log(
-            `✓ ${name} (${e.score}/100) — ${e.runningAds ? "ADS" : "no ads"}`,
+            `✓ ${name} — ${tierUp} (${e.signals.confidence}%)`,
             {
               action: "lead_inserted",
               target_table: "leads",
               level: "success",
               metadata: {
                 name,
-                score: e.score,
-                runningAds: e.runningAds,
+                tier: e.signals.tier,
+                confidence: e.signals.confidence,
+                running_paid_ads: e.signals.running_paid_ads,
+                has_instagram: e.signals.has_instagram,
+                has_recent_reviews: e.signals.has_recent_reviews,
                 city: e.city,
                 vertical: verticalId,
               },
@@ -636,17 +713,25 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
       }
 
       await ctx.log(
-        `Real Lead Scout complete: ${inserted}/${top.length} new leads added`,
+        `Real Lead Scout complete: ${inserted}/${top.length} new leads added (${confirmedCount} confirmed, ${probableCount} probable)`,
         {
           action: "real_scout_summary",
           level: "success",
-          metadata: { inserted, total: top.length, vertical: verticalId },
+          metadata: {
+            inserted,
+            total: top.length,
+            confirmed: confirmedCount,
+            probable: probableCount,
+            vertical: verticalId,
+          },
         },
       );
 
       return {
         inserted_count: inserted,
         total: top.length,
+        confirmed: confirmedCount,
+        probable: probableCount,
         vertical: verticalId,
         mode: "real" as const,
       };

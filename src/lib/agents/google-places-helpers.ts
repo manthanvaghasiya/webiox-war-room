@@ -6,6 +6,8 @@
 // The GOOGLE_PLACES_API_KEY is read here and ONLY here — it is passed straight
 // into a request header and never logged. Callers should never touch the key.
 
+import { extractDomain, findEmailsForDomain } from "./enricher-helpers";
+
 // ===== Verticals =============================================================
 
 export type VerticalConfig = {
@@ -355,6 +357,283 @@ export async function checkRunningFacebookAds(
   return false;
 }
 
+// ===== Recent reviews check (Google Places Details API) =====================
+
+// Fetches up to 5 most-recent reviews and reports whether at least one is
+// within the last 60 days. Used as the "active business" signal — old
+// reviews mean the business may be on autopilot or stale.
+//
+// FieldMask is "reviews" only — keeps the per-request cost low. Returns
+// has_recent=false on any error so a single bad place_id can't abort a run.
+export async function checkRecentReviews(
+  placeId: string,
+): Promise<{ has_recent: boolean; latest_review_date: string | null }> {
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  if (!apiKey || !placeId)
+    return { has_recent: false, latest_review_date: null };
+
+  const res = await fetchWithTimeout(
+    `https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}`,
+    {
+      method: "GET",
+      headers: {
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask": "reviews",
+      },
+    },
+  );
+  if (!res || !res.ok) return { has_recent: false, latest_review_date: null };
+
+  let data: {
+    reviews?: Array<{
+      publishTime?: string;
+      relativePublishTimeDescription?: string;
+    }>;
+  };
+  try {
+    data = (await res.json()) as typeof data;
+  } catch {
+    return { has_recent: false, latest_review_date: null };
+  }
+
+  const reviews = data.reviews ?? [];
+  if (reviews.length === 0)
+    return { has_recent: false, latest_review_date: null };
+
+  // Find the most recent valid publishTime.
+  let latestMs = 0;
+  let latestIso: string | null = null;
+  for (const r of reviews) {
+    if (!r.publishTime) continue;
+    const t = Date.parse(r.publishTime);
+    if (!Number.isFinite(t)) continue;
+    if (t > latestMs) {
+      latestMs = t;
+      latestIso = new Date(t).toISOString();
+    }
+  }
+  if (!latestIso) return { has_recent: false, latest_review_date: null };
+
+  const sixtyDaysMs = 60 * 24 * 60 * 60 * 1000;
+  const has_recent = Date.now() - latestMs <= sixtyDaysMs;
+  return { has_recent, latest_review_date: latestIso };
+}
+
+// ===== Instagram profile lookup (DuckDuckGo HTML) ===========================
+
+// Search-based Instagram presence check — no Meta API needed. We can't
+// reliably get follower counts via HTTP, so "active" simply means a profile
+// URL was found. Profile URLs only — /p/ post and /reel/ links are ignored.
+export async function findInstagramProfile(
+  businessName: string,
+  city: string,
+): Promise<{ url: string | null; active: boolean }> {
+  if (!businessName.trim()) return { url: null, active: false };
+
+  const q = encodeURIComponent(
+    `site:instagram.com "${businessName}" ${city}`.trim(),
+  );
+  const res = await fetchWithTimeout(`https://html.duckduckgo.com/html/?q=${q}`, {
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; WebioxBot/1.0)" },
+  });
+  if (!res || !res.ok) return { url: null, active: false };
+
+  let html: string;
+  try {
+    html = await res.text();
+  } catch {
+    return { url: null, active: false };
+  }
+
+  const linkRe = /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"/gi;
+  let m: RegExpExecArray | null;
+  while ((m = linkRe.exec(html))) {
+    let candidate = m[1];
+    try {
+      if (candidate.startsWith("/l/?") || candidate.includes("uddg=")) {
+        const parsed = new URL(candidate, "https://duckduckgo.com");
+        const real = parsed.searchParams.get("uddg");
+        if (real) candidate = decodeURIComponent(real);
+      }
+    } catch {
+      // candidate stays as-is
+    }
+    if (!candidate.startsWith("http")) continue;
+
+    let host = "";
+    let path = "";
+    try {
+      const u = new URL(candidate);
+      host = u.hostname.toLowerCase().replace(/^www\./, "");
+      path = u.pathname;
+    } catch {
+      continue;
+    }
+    if (host !== "instagram.com") continue;
+
+    // /USERNAME — reject post, reel, explore, etc.
+    const segments = path.split("/").filter(Boolean);
+    if (segments.length === 0) continue;
+    const first = segments[0].toLowerCase();
+    if (
+      first === "p" ||
+      first === "reel" ||
+      first === "reels" ||
+      first === "explore" ||
+      first === "stories" ||
+      first === "tv" ||
+      first === "accounts"
+    ) {
+      continue;
+    }
+    if (!/^[A-Za-z0-9._]{1,30}$/.test(segments[0])) continue;
+
+    return { url: `https://instagram.com/${segments[0]}`, active: true };
+  }
+
+  return { url: null, active: false };
+}
+
+// ===== Signal stacking ======================================================
+
+export type SignalScore = {
+  has_good_rating: boolean;
+  has_review_volume: boolean;
+  has_working_phone: boolean;
+  not_franchise: boolean;
+  has_recent_reviews: boolean;
+  running_paid_ads: boolean;
+  has_instagram: boolean;
+  has_verified_email: boolean;
+  confidence: number; // 0-100
+  tier: "confirmed" | "probable" | "weak";
+  reasoning: string[];
+  instagram_url: string | null;
+  latest_review_date: string | null;
+};
+
+export type StackSignalsOpts = {
+  raw: PlacesRaw;
+  city: string;
+  vertical: string;
+  excludeFranchises: boolean;
+  minReviews: number;
+  minRating: number;
+};
+
+// Runs all 8 checks against a Google Places result and returns a weighted
+// 0-100 confidence score plus a tier. Franchise leads short-circuit early
+// (we don't waste API calls on rejects). Network failures inside individual
+// checks degrade to `false` for that signal rather than aborting the stack.
+export async function stackSignals(
+  opts: StackSignalsOpts,
+): Promise<SignalScore> {
+  const { raw, city, excludeFranchises, minReviews, minRating } = opts;
+  const reasoning: string[] = [];
+
+  // 1. Rating
+  const has_good_rating = (raw.rating ?? 0) >= minRating;
+  if (has_good_rating) reasoning.push(`${raw.rating}★ rating ✓`);
+
+  // 2. Review volume
+  const has_review_volume = (raw.userRatingCount ?? 0) >= minReviews;
+  if (has_review_volume) reasoning.push(`${raw.userRatingCount} reviews ✓`);
+
+  // 3. Phone
+  const has_working_phone = !!(
+    raw.internationalPhoneNumber || raw.nationalPhoneNumber
+  );
+  if (has_working_phone) reasoning.push("Phone available ✓");
+
+  // 4. Not franchise
+  const name = raw.displayName?.text ?? "";
+  const not_franchise = !excludeFranchises || !isFranchiseDealer(name);
+  if (not_franchise) reasoning.push("Independent business ✓");
+  else reasoning.push("FRANCHISE — skipping");
+
+  // Early exit for franchises — saves Details API + DDG quota on rejects.
+  if (!not_franchise) {
+    return {
+      has_good_rating,
+      has_review_volume,
+      has_working_phone,
+      not_franchise,
+      has_recent_reviews: false,
+      running_paid_ads: false,
+      has_instagram: false,
+      has_verified_email: false,
+      confidence: 0,
+      tier: "weak",
+      reasoning,
+      instagram_url: null,
+      latest_review_date: null,
+    };
+  }
+
+  // 5. Recent reviews
+  const recentCheck = raw.id
+    ? await checkRecentReviews(raw.id)
+    : { has_recent: false, latest_review_date: null };
+  const has_recent_reviews = recentCheck.has_recent;
+  if (has_recent_reviews)
+    reasoning.push("Reviews in last 60 days ✓ (active business)");
+
+  // 6. Paid ads
+  const running_paid_ads = await checkRunningFacebookAds(name, city);
+  if (running_paid_ads)
+    reasoning.push("Running paid ads ✓ (budget signal 🔥)");
+
+  // 7. Instagram
+  const ig = await findInstagramProfile(name, city);
+  const has_instagram = ig.active;
+  if (has_instagram) reasoning.push("Active on Instagram ✓");
+
+  // 8. Email verified via Hunter — only attempted if the place has a website.
+  // Missing HUNTER_API_KEY → silently degrades to false.
+  let has_verified_email = false;
+  if (raw.websiteUri) {
+    const domain = extractDomain(raw.websiteUri);
+    if (domain) {
+      const emails = await findEmailsForDomain(domain, 1);
+      if (emails.length > 0) {
+        has_verified_email = true;
+        reasoning.push("Email found via Hunter ✓");
+      }
+    }
+  }
+
+  // Weighted confidence — paid_ads is the strongest single signal, review
+  // volume next, then everything else in the 10-15 band.
+  let confidence = 0;
+  if (has_good_rating) confidence += 10;
+  if (has_review_volume) confidence += 15;
+  if (has_working_phone) confidence += 10;
+  if (not_franchise) confidence += 10;
+  if (has_recent_reviews) confidence += 15;
+  if (running_paid_ads) confidence += 20;
+  if (has_instagram) confidence += 10;
+  if (has_verified_email) confidence += 10;
+
+  const tier: SignalScore["tier"] =
+    confidence >= 75 ? "confirmed" : confidence >= 50 ? "probable" : "weak";
+
+  return {
+    has_good_rating,
+    has_review_volume,
+    has_working_phone,
+    not_franchise,
+    has_recent_reviews,
+    running_paid_ads,
+    has_instagram,
+    has_verified_email,
+    confidence,
+    tier,
+    reasoning,
+    instagram_url: ig.url,
+    latest_review_date: recentCheck.latest_review_date,
+  };
+}
+
 // ===== Lead scoring ==========================================================
 
 export type ScoreInput = {
@@ -436,13 +715,16 @@ export type CallScriptLead = {
   reasoning: string;
   has_website: boolean;
   running_ads: boolean;
+  has_instagram?: boolean;
   rating?: number | null;
   reviews?: number | null;
 };
 
 // Template-based 30-second cold-call script in THREE languages:
-// Hinglish, English, and Gujarati — with sadgurucarsurat.com as the
-// car_dealer vertical case study.
+// Hinglish, English, and Gujarati. From Step 13 onward, the pitch always
+// presents BOTH the website work and custom business software (CRM / inventory
+// / customer DB) as parts of one Webiox package — never one OR the other —
+// with sadgurucarsurat.com as the bundled case study.
 export function buildCallScript(
   lead: CallScriptLead,
   caseStudyUrl = "sadgurucarsurat.com",
@@ -452,61 +734,83 @@ export function buildCallScript(
   const reviewsStr = reviews ? reviews.toLocaleString("en-IN") : "kai saare";
   const greet = "Sir";
 
-  // Build the "why I'm calling" hook
-  let hookHinglish = "";
-  let hookEnglish = "";
-  let hookGujarati = "";
+  // Build the "why I'm calling" hook — calls out the strongest signals.
+  const igLineH = lead.has_instagram
+    ? " Instagram pe bhi active ho — achha sign hai."
+    : "";
+  const igLineE = lead.has_instagram
+    ? " You're also active on Instagram — good sign."
+    : "";
+  const igLineG = lead.has_instagram
+    ? " Instagram પર પણ active છો — સારી નિશાની."
+    : "";
 
-  if (!lead.has_website && lead.vertical === "car_dealer") {
-    hookHinglish =
-      `Aapka ${lead.name} ${lead.city} mein ${reviewsStr} reviews aur ${rating}★ rating dekha — bahut achha business hai. ` +
-      `Lekin online search karne pe website nahi mili. Aaj kal customer pehle Google pe search karta hai car dekhne ke liye — agar website nahi to vo competitor pe chala jata hai.`;
-    hookEnglish =
-      `${greet}, I noticed ${lead.name} has ${reviewsStr} reviews and ${rating}★ rating in ${lead.city} — strong business. ` +
-      `But there's no website online, and most customers search Google first before visiting a dealership.`;
-    hookGujarati =
-      `${greet}, ${lead.name} ${lead.city} માં ${reviewsStr} reviews અને ${rating}★ rating જોઈ — સારું business છે. ` +
-      `પણ online website નથી. અત્યારે customer પહેલા Google પર search કરે છે — website ના હોવાથી competitor પાસે જતો રહે છે.`;
-  } else if (lead.has_website && lead.vertical === "car_dealer") {
-    hookHinglish =
-      `Aapka ${lead.name} ${lead.city} mein ${reviewsStr} reviews aur ${rating}★ rating dekha — strong business. ` +
-      `Aapki website bhi dekhi — kuch improvements ho sakte hain jisse ${lead.running_ads ? "aapke ad ka ROI 2-3x ho jaye" : "leads zyada aaye"}.`;
-    hookEnglish =
-      `${greet}, I checked ${lead.name} — ${reviewsStr} reviews, ${rating}★. Looked at your website — there are some quick wins that can ` +
-      `${lead.running_ads ? "2-3x your ad ROI" : "bring more inquiries"}.`;
-    hookGujarati =
-      `${greet}, ${lead.name} ${reviewsStr} reviews, ${rating}★ rating જોયું. Website પણ check કરી — થોડા improvements થી ` +
-      `${lead.running_ads ? "ad નો ROI 2-3x" : "વધારે leads"} મળી શકે છે.`;
-  } else {
-    // generic for other verticals
-    hookHinglish = `Aapka ${lead.name} ${lead.city} mein ${reviewsStr} reviews aur ${rating}★ rating dekha — bahut achha business hai.`;
-    hookEnglish = `${greet}, I came across ${lead.name} — ${reviewsStr} reviews, ${rating}★ in ${lead.city}. Strong business.`;
-    hookGujarati = `${greet}, ${lead.name} ${lead.city} માં ${reviewsStr} reviews અને ${rating}★ rating જોઈ. સારું business છે.`;
-  }
+  const siteLineH = lead.has_website
+    ? "Aapki website bhi dekhi."
+    : "Lekin online search karne pe website nahi mili.";
+  const siteLineE = lead.has_website
+    ? "I checked your website too."
+    : "But there's no website online for the business.";
+  const siteLineG = lead.has_website
+    ? "Website પણ જોઈ."
+    : "પણ online website નથી મળી.";
 
-  const caseStudyLine =
-    lead.vertical === "car_dealer"
-      ? `Recently main ne ${caseStudyUrl} banaya for ek Surat dealer — unke WhatsApp leads 3x ho gaye, online se customer aane lage. Same approach aap ke liye bhi work karega.`
-      : `Recently humne ${caseStudyUrl} banaya ek Surat ke business ke liye — abhi unke paas WhatsApp leads 3x ho gaye hain. Same approach aap ke liye bhi work karega.`;
-  const caseStudyLineEnglish =
-    lead.vertical === "car_dealer"
-      ? `I recently built ${caseStudyUrl} for a Surat dealer — their WhatsApp inquiries 3x'd within 60 days. Same playbook applies to you.`
-      : `We recently built ${caseStudyUrl} for a Surat business — their WhatsApp leads have since tripled. The same approach would work well for you.`;
-  const caseStudyLineGujarati =
-    lead.vertical === "car_dealer"
-      ? `તાજેતરમાં મેં ${caseStudyUrl} બનાવી એક Surat dealer માટે — એમના WhatsApp leads 3x થઈ ગયા. એ જ approach તમારા માટે પણ કામ કરશે.`
-      : `તાજેતરમાં અમે ${caseStudyUrl} બનાવી — એમના WhatsApp leads 3x થઈ ગયા. એ જ approach તમારા માટે પણ કામ કરશે.`;
+  const hookHinglish =
+    `Aapka ${lead.name} ${lead.city} mein ${reviewsStr} reviews aur ${rating}★ rating dekha — bahut achha business hai.${igLineH} ${siteLineH}`;
+  const hookEnglish =
+    `${greet}, I came across ${lead.name} — ${reviewsStr} reviews and ${rating}★ rating in ${lead.city}, strong business.${igLineE} ${siteLineE}`;
+  const hookGujarati =
+    `${greet}, ${lead.name} ${lead.city} માં ${reviewsStr} reviews અને ${rating}★ rating જોઈ — સારું business છે.${igLineG} ${siteLineG}`;
 
-  const closeHinglish =
-    "5 minute ka time hai? Main aapko ek quick example bhej deta hoon WhatsApp pe.";
-  const closeEnglish =
-    "Got 5 minutes? I'll send a quick example on WhatsApp.";
-  const closeGujarati =
-    "5 minute નો time છે? હું તમને WhatsApp પર એક quick example મોકલીશ.";
+  // Dual offering — two parallel pillars, not an either/or.
+  const websiteLabelH = lead.has_website
+    ? "Premium business website refresh + SEO"
+    : "Premium business website (fresh build) + SEO";
+  const websiteLabelE = lead.has_website
+    ? "Premium business website refresh + SEO"
+    : "Premium business website (fresh build) + SEO";
+  const websiteLabelG = lead.has_website
+    ? "Premium business website refresh + SEO"
+    : "Premium business website (નવી) + SEO";
+
+  const offeringHinglish =
+    `Hum 2 kaam karte hain Webiox mein:\n` +
+    `1. ${websiteLabelH}\n` +
+    `2. Custom business software / CRM — leads, inventory, customer database manage karne ke liye`;
+  const offeringEnglish =
+    `At Webiox we do two things:\n` +
+    `1. ${websiteLabelE}\n` +
+    `2. Custom business software / CRM — to manage leads, inventory and your customer database`;
+  const offeringGujarati =
+    `Webiox માં અમે 2 કામ કરીએ છીએ:\n` +
+    `1. ${websiteLabelG}\n` +
+    `2. Custom business software / CRM — leads, inventory અને customer database manage કરવા માટે`;
+
+  // Case study — Sadguru Cars Surat for car dealers, generic Surat business
+  // otherwise. Either way it's a dual-deliverable case study now.
+  const caseStudyHinglish =
+    lead.vertical === "car_dealer"
+      ? `Sadguru Cars Surat ke liye recently dono kaam kiya — ${caseStudyUrl} par dekh sakte ho. Unke WhatsApp leads 3x ho gaye aur internal management bhi smooth ho gaya.`
+      : `Recently ek Surat business ke liye dono kaam kiya — ${caseStudyUrl} par dekh sakte ho. WhatsApp leads 3x ho gaye aur internal management bhi smooth ho gaya.`;
+  const caseStudyEnglish =
+    lead.vertical === "car_dealer"
+      ? `We recently shipped both for Sadguru Cars Surat — you can see it at ${caseStudyUrl}. Their WhatsApp inquiries 3x'd and their internal ops got a lot smoother.`
+      : `We recently shipped both for a Surat business — you can see it at ${caseStudyUrl}. Their WhatsApp leads 3x'd and their internal ops became much smoother.`;
+  const caseStudyGujarati =
+    lead.vertical === "car_dealer"
+      ? `તાજેતરમાં Sadguru Cars Surat માટે બંને કામ કર્યા — ${caseStudyUrl} પર જોઈ શકો. એમના WhatsApp leads 3x થઈ ગયા અને internal management પણ smooth થઈ ગયું.`
+      : `તાજેતરમાં એક Surat business માટે બંને કામ કર્યા — ${caseStudyUrl} પર જોઈ શકો. WhatsApp leads 3x થઈ ગયા અને internal management પણ smooth થઈ ગયું.`;
+
+  const askHinglish =
+    "Aapke business ke liye dono mein se kya zyada relevant lagta hai, ya dono?\n\n10 minute baat kar sakte hain?";
+  const askEnglish =
+    "Which of the two feels more relevant for your business — or both?\n\nGot 10 minutes for a quick call?";
+  const askGujarati =
+    "તમારા business માટે બંને માંથી શું વધારે relevant લાગે છે, કે બંને?\n\n10 minute વાત કરી શકીએ?";
 
   return {
-    hinglish: `Namaste ${greet},\n\nMain Manthan bol raha hoon Webiox se, Ahmedabad mein.\n\n${hookHinglish}\n\n${caseStudyLine}\n\n${closeHinglish}\n\n— Manthan, Webiox`,
-    english: `Hi ${greet},\n\nI'm Manthan from Webiox, Ahmedabad.\n\n${hookEnglish}\n\n${caseStudyLineEnglish}\n\n${closeEnglish}\n\n— Manthan, Webiox`,
-    gujarati: `નમસ્તે ${greet},\n\nહું Manthan, Webiox થી, Ahmedabad માં.\n\n${hookGujarati}\n\n${caseStudyLineGujarati}\n\n${closeGujarati}\n\n— Manthan, Webiox`,
+    hinglish: `Namaste ${greet},\nMain Manthan from Webiox, Ahmedabad.\n\n${hookHinglish}\n\n${offeringHinglish}\n\n${caseStudyHinglish}\n\n${askHinglish}\n\n— Manthan, Webiox`,
+    english: `Hi ${greet},\nI'm Manthan from Webiox, Ahmedabad.\n\n${hookEnglish}\n\n${offeringEnglish}\n\n${caseStudyEnglish}\n\n${askEnglish}\n\n— Manthan, Webiox`,
+    gujarati: `નમસ્તે ${greet},\nહું Manthan, Webiox થી, Ahmedabad માં.\n\n${hookGujarati}\n\n${offeringGujarati}\n\n${caseStudyGujarati}\n\n${askGujarati}\n\n— Manthan, Webiox`,
   };
 }

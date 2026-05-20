@@ -1,7 +1,11 @@
 import Link from "next/link";
 
 import { TopBar } from "@/components/dashboard/topbar";
-import { LeadsTable, type LeadRow } from "@/components/dashboard/leads-table";
+import {
+  LeadsTable,
+  type LeadRow,
+  type TierFilter,
+} from "@/components/dashboard/leads-table";
 import { AgentActionInline } from "@/components/dashboard/agent-action-buttons";
 import { createClient } from "@/lib/supabase/server";
 import { SOLUTIONS, type SolutionType } from "@/types/database";
@@ -13,16 +17,25 @@ function isSolution(v: string | undefined): v is SolutionType {
   return !!v && SOLUTIONS.some((s) => s.id === v);
 }
 
+function isTier(v: string | undefined): v is TierFilter {
+  return v === "confirmed" || v === "probable" || v === "all";
+}
+
 export default async function LeadsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ solution?: string; pipeline?: string }>;
+  searchParams: Promise<{
+    solution?: string;
+    pipeline?: string;
+    tier?: string;
+  }>;
 }) {
-  const { solution, pipeline } = await searchParams;
+  const { solution, pipeline, tier } = await searchParams;
   const pipelineReady = pipeline === "1";
   // Pipeline-ready view takes precedence over a solution filter.
   const activeSolution =
     !pipelineReady && isSolution(solution) ? solution : null;
+  const activeTier: TierFilter = isTier(tier) ? tier : "all";
 
   const supabase = await createClient();
   const {
@@ -45,6 +58,20 @@ export default async function LeadsPage({
   const countFor = (id: SolutionType) =>
     leads.filter((l) => l.recommended_solution === id).length;
   const pipelineCount = leads.filter((l) => l.lead_score >= 70).length;
+  const confirmedCount = leads.filter((l) => l.lead_score >= 75).length;
+  const probableCount = leads.filter(
+    (l) => l.lead_score >= 50 && l.lead_score < 75,
+  ).length;
+
+  // Preserve solution/pipeline state when toggling tier pills.
+  const tierHref = (t: TierFilter) => {
+    const params = new URLSearchParams();
+    if (pipelineReady) params.set("pipeline", "1");
+    else if (activeSolution) params.set("solution", activeSolution);
+    if (t !== "all") params.set("tier", t);
+    const qs = params.toString();
+    return qs ? `/leads?${qs}` : "/leads";
+  };
 
   return (
     <>
@@ -93,11 +120,37 @@ export default async function LeadsPage({
           </div>
         </div>
 
+        {/* Tier filter pills — narrows the table by confidence tier. */}
+        <div className="flex flex-wrap items-center gap-2">
+          <FilterPill
+            href={tierHref("all")}
+            label="All Tiers"
+            count={leads.length}
+            active={activeTier === "all"}
+            color="var(--color-neon-green)"
+          />
+          <FilterPill
+            href={tierHref("confirmed")}
+            label="🟢 Confirmed only"
+            count={confirmedCount}
+            active={activeTier === "confirmed"}
+            color="#00ff88"
+          />
+          <FilterPill
+            href={tierHref("probable")}
+            label="🟡 Probable only"
+            count={probableCount}
+            active={activeTier === "probable"}
+            color="#fbbf24"
+          />
+        </div>
+
         <LeadsTable
           userId={userId}
           initialLeads={leads}
           activeSolution={activeSolution}
           pipelineReady={pipelineReady}
+          tierFilter={activeTier}
         />
       </div>
     </>

@@ -64,6 +64,48 @@ export function SolutionBadge({
   );
 }
 
+// Confidence tier derived from lead_score (Step 13). The scout filters out
+// weak (<50) before insert, so the gray "—" path should rarely render.
+export function TierBadge({ score }: { score: number }) {
+  if (score >= 75) {
+    const color = "#00ff88";
+    return (
+      <span
+        className="inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider"
+        style={{
+          color,
+          borderLeft: `2px solid ${color}`,
+          backgroundColor: `color-mix(in srgb, ${color} 14%, transparent)`,
+        }}
+        title={`Confirmed lead (${score}% confidence)`}
+      >
+        <span aria-hidden>🟢</span>Confirmed
+      </span>
+    );
+  }
+  if (score >= 50) {
+    const color = "#fbbf24";
+    return (
+      <span
+        className="inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider"
+        style={{
+          color,
+          borderLeft: `2px solid ${color}`,
+          backgroundColor: `color-mix(in srgb, ${color} 14%, transparent)`,
+        }}
+        title={`Probable lead (${score}% confidence)`}
+      >
+        <span aria-hidden>🟡</span>Probable
+      </span>
+    );
+  }
+  return (
+    <span className="font-mono text-[10px] text-[color:var(--color-text-muted)]">
+      —
+    </span>
+  );
+}
+
 // Colored score badge. 0 → dash; <40 red; 40-69 amber; 70-89 green; 90+ glow.
 export function ScoreBadge({
   score,

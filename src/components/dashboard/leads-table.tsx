@@ -11,6 +11,7 @@ import {
   ScoreBadge,
   SegmentBadge,
   SolutionBadge,
+  TierBadge,
 } from "@/components/dashboard/lead-badges";
 import { type Lead, type LeadStatus, type SolutionType } from "@/types/database";
 
@@ -318,16 +319,20 @@ function WhyCell({
   );
 }
 
+export type TierFilter = "all" | "confirmed" | "probable";
+
 export function LeadsTable({
   userId,
   initialLeads,
   activeSolution = null,
   pipelineReady = false,
+  tierFilter = "all",
 }: {
   userId: string;
   initialLeads: LeadRow[];
   activeSolution?: SolutionType | null;
   pipelineReady?: boolean;
+  tierFilter?: TierFilter;
 }) {
   const [leads, setLeads] = useState<LeadRow[]>(initialLeads);
 
@@ -372,9 +377,10 @@ export function LeadsTable({
     };
   }, [userId]);
 
-  // Filter (pipeline-ready takes precedence over solution), then sort by
-  // score DESC so the highest-value leads sit on top — re-sorts live as the
-  // qualifier writes new scores.
+  // Filter (pipeline-ready takes precedence over solution, then tier-only
+  // filter applies on top), then sort by tier (confirmed > probable > other),
+  // confidence breaks the tie — so the strongest tier sits on top regardless
+  // of what the qualifier later writes back into lead_score.
   const visible = useMemo(() => {
     let rows = leads;
     if (pipelineReady) {
@@ -382,8 +388,19 @@ export function LeadsTable({
     } else if (activeSolution) {
       rows = rows.filter((l) => l.recommended_solution === activeSolution);
     }
-    return [...rows].sort((a, b) => b.lead_score - a.lead_score);
-  }, [leads, activeSolution, pipelineReady]);
+    if (tierFilter === "confirmed") {
+      rows = rows.filter((l) => l.lead_score >= 75);
+    } else if (tierFilter === "probable") {
+      rows = rows.filter((l) => l.lead_score >= 50 && l.lead_score < 75);
+    }
+    return [...rows].sort((a, b) => {
+      const tierRank = (s: number) => (s >= 75 ? 2 : s >= 50 ? 1 : 0);
+      const rb = tierRank(b.lead_score);
+      const ra = tierRank(a.lead_score);
+      if (rb !== ra) return rb - ra;
+      return b.lead_score - a.lead_score;
+    });
+  }, [leads, activeSolution, pipelineReady, tierFilter]);
 
   if (leads.length === 0) {
     return (
@@ -414,7 +431,7 @@ export function LeadsTable({
 
   return (
     <div className="panel overflow-x-auto">
-      <table className="w-full min-w-[1180px] text-sm">
+      <table className="w-full min-w-[1300px] text-sm">
         <thead>
           <tr className="border-b border-[color:var(--color-border-base)] text-left text-[10px] uppercase tracking-[0.22em] text-[color:var(--color-text-muted)]">
             <th className="px-4 py-3 font-normal">Segment</th>
@@ -427,6 +444,7 @@ export function LeadsTable({
             <th className="px-4 py-3 font-normal">Why</th>
             <th className="px-4 py-3 font-normal">Status</th>
             <th className="px-4 py-3 font-normal text-center">Verified</th>
+            <th className="px-4 py-3 font-normal">Tier</th>
             <th className="px-4 py-3 font-normal text-right">Score</th>
             <th className="px-4 py-3 font-normal text-right">Created</th>
           </tr>
@@ -517,6 +535,9 @@ export function LeadsTable({
                         —
                       </span>
                     )}
+                  </td>
+                  <td className="px-4 py-3">
+                    <TierBadge score={l.lead_score} />
                   </td>
                   <td className="px-4 py-3 text-right">
                     <ScoreBadge
