@@ -402,39 +402,67 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
 
       const { data: settings } = await ctx.supabase
         .from("settings")
-        .select("*")
+        .select(
+          "target_vertical, search_cities, min_rating, min_reviews, max_results_per_run, custom_keyword, exclude_franchises, require_preowned_keyword, prioritize_no_website",
+        )
         .eq("user_id", userId)
         .single();
 
-      // TODO(step-11.5): expose target_vertical / min_reviews / min_rating as
-      // real settings columns + UI. For now the event payload drives these;
-      // the settings reads below are best-effort and tolerate missing columns.
+      // Event payload still wins (lets us trigger one-off runs from the UI),
+      // then settings, then sensible defaults if the user hasn't saved yet.
       const verticalId =
         opts.vertical ?? settings?.target_vertical ?? "car_dealer";
       const vertical = VERTICALS[verticalId];
       if (!vertical) throw new Error(`Unknown vertical: ${verticalId}`);
 
-      const cities = opts.cities ?? GUJARAT_CITIES;
-      const limit = opts.limit ?? 10;
+      const cities =
+        opts.cities ??
+        (settings?.search_cities?.length
+          ? settings.search_cities
+          : GUJARAT_CITIES);
       const minReviews = settings?.min_reviews ?? 100;
-      const minRating = settings?.min_rating ?? 4.0;
+      const minRating = settings?.min_rating
+        ? Number(settings.min_rating)
+        : 4.0;
+      const maxResults = settings?.max_results_per_run ?? 50;
+      const customKeyword = settings?.custom_keyword?.trim() || null;
+      const excludeFranchises = settings?.exclude_franchises ?? true;
+      const requirePreowned = settings?.require_preowned_keyword ?? false;
+      const prioritizeNoWebsite = settings?.prioritize_no_website ?? true;
 
       await ctx.log(
-        `Hunting ${vertical.label} in ${cities.join(", ")} (≥${minReviews} reviews, ≥${minRating}★)`,
+        `Hunting ${vertical.label} in ${cities.join(", ")} (≥${minReviews} reviews, ≥${minRating}★, custom="${customKeyword ?? "none"}", maxResults=${maxResults}, excludeFranchises=${excludeFranchises}, requirePreowned=${requirePreowned}, prioritizeNoWebsite=${prioritizeNoWebsite})`,
         {
           action: "scout_start",
-          metadata: { vertical: verticalId, cities, minReviews, minRating },
+          metadata: {
+            vertical: verticalId,
+            cities,
+            minReviews,
+            minRating,
+            maxResults,
+            customKeyword,
+            excludeFranchises,
+            requirePreowned,
+            prioritizeNoWebsite,
+          },
         },
       );
 
       // For each city: search → filter premium → collect.
       const allRaw: PlacesRaw[] = [];
       for (const city of cities) {
-        const raws = await searchPlacesForVertical(vertical, city);
+        const raws = await searchPlacesForVertical(
+          vertical,
+          city,
+          20,
+          customKeyword,
+        );
         const filtered = filterPremium(raws, {
           minReviews,
           minRating,
           excludeKeywords: vertical.excludeKeywords,
+          excludeFranchises,
+          requirePreownedKeyword: requirePreowned,
         });
         await ctx.log(`${city}: ${raws.length} found, ${filtered.length} premium`, {
           action: "city_done",
@@ -444,11 +472,11 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
         allRaw.push(...filtered);
       }
 
-      // Sort by review count DESC, take top (limit × 2) for ad-checking.
+      // Sort by review count DESC, take top (maxResults × 2) for ad-checking.
       allRaw.sort(
         (a, b) => (b.userRatingCount ?? 0) - (a.userRatingCount ?? 0),
       );
-      const candidates = allRaw.slice(0, limit * 2);
+      const candidates = allRaw.slice(0, maxResults * 2);
 
       // Check ads sequentially — 8s timeout each, ~2 min worst case for 20.
       const enriched: Array<{
@@ -494,15 +522,21 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
         enriched.push({ raw, city, runningAds, multiLoc, score, reasoning });
       }
 
-      // Sort: NO-WEBSITE first, then by score within each group.
-      enriched.sort((a, b) => {
-        const aNoSite = !a.raw.websiteUri ? 1 : 0;
-        const bNoSite = !b.raw.websiteUri ? 1 : 0;
-        if (aNoSite !== bNoSite) return bNoSite - aNoSite; // no-site first
-        return b.score - a.score;
-      });
-      // Hard cap at 50 (safety net), then respect caller limit.
-      const top = enriched.slice(0, Math.min(opts.limit ?? 50, 50));
+      // Sort: when prioritizeNoWebsite is on, NO-WEBSITE leads come first
+      // (easiest pitch), with score breaking ties. Otherwise pure score order.
+      if (prioritizeNoWebsite) {
+        enriched.sort((a, b) => {
+          const aNoSite = !a.raw.websiteUri ? 1 : 0;
+          const bNoSite = !b.raw.websiteUri ? 1 : 0;
+          if (aNoSite !== bNoSite) return bNoSite - aNoSite;
+          return b.score - a.score;
+        });
+      } else {
+        enriched.sort((a, b) => b.score - a.score);
+      }
+      // Caller limit wins, falling back to the user's max_results_per_run.
+      // Hard cap of 100 keeps a runaway setting from blowing up a run.
+      const top = enriched.slice(0, Math.min(opts.limit ?? maxResults, 100));
 
       await ctx.log(`Top ${top.length} hot leads selected`, {
         action: "top_selected",

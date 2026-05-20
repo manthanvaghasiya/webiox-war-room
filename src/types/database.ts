@@ -182,7 +182,33 @@ export interface Settings {
   agency_logo_url: string | null;
   proposal_footer: string | null;
   supported_languages: LeadLanguage[];
+
+  // ICP columns — added by the Step 12 migration. Drive the real Lead Scout.
+  target_vertical: string | null;
+  search_cities: string[] | null;
+  min_rating: number | null;
+  min_reviews: number | null;
+  max_results_per_run: number | null;
+  custom_keyword: string | null;
+  exclude_franchises: boolean | null;
+  require_preowned_keyword: boolean | null;
+  prioritize_no_website: boolean | null;
 }
+
+// ICP dropdown options for the Settings UI. `defaultQueries` is informational
+// (kept here so the UI can hint what the vertical will search for); the actual
+// query strings live in src/lib/agents/google-places-helpers.ts.
+export const VERTICAL_OPTIONS = [
+  { value: 'car_dealer', label: '🚗 Pre-Owned Car Dealers', defaultQueries: ['pre-owned cars', 'used cars', 'second hand cars', 'buy sell exchange cars'] },
+  { value: 'clinic',     label: '🏥 Multi-Specialty Hospitals', defaultQueries: ['multispeciality hospital', 'medical center', 'clinic'] },
+  { value: 'gym',        label: '💪 Premium Gyms', defaultQueries: ['premium gym fitness', 'fitness center', 'crossfit'] },
+  { value: 'boutique',   label: '👗 Designer Boutiques', defaultQueries: ['designer boutique', 'fashion store', 'ethnic wear'] },
+  { value: 'restaurant', label: '🍽️ Fine Dining Restaurants', defaultQueries: ['fine dining', 'premium restaurant', 'rooftop restaurant'] },
+  { value: 'law_firm',   label: '⚖️ Law Firms', defaultQueries: ['law firm', 'advocates', 'corporate law'] },
+  { value: 'jewelry',    label: '💎 Jewelry Showrooms', defaultQueries: ['jewelry showroom', 'diamond jewelry', 'gold jewelry'] },
+] as const;
+
+export const CITY_OPTIONS = ['Ahmedabad', 'Surat', 'Vadodara', 'Rajkot'] as const;
 
 export interface Lead {
   id: string;

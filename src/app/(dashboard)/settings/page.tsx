@@ -1,10 +1,10 @@
 import { TopBar } from "@/components/dashboard/topbar";
-import { createClient } from "@/lib/supabase/server";
 import {
-  SettingsForm,
-  type SettingsFormValues,
-} from "@/components/dashboard/settings-form";
-import type { Settings } from "@/types/database";
+  IcpSettingsForm,
+  type IcpFormInitial,
+} from "@/components/dashboard/icp-settings-form";
+import { createClient } from "@/lib/supabase/server";
+import { CITY_OPTIONS, type Settings } from "@/types/database";
 
 export default async function SettingsPage() {
   const supabase = await createClient();
@@ -15,32 +15,43 @@ export default async function SettingsPage() {
   const { data } = await supabase
     .from("settings")
     .select(
-      "agency_name,sender_name,sender_email,daily_lead_limit,daily_email_limit,icp_job_titles,icp_industries,icp_locations",
+      [
+        "agency_name",
+        "sender_name",
+        "sender_email",
+        "target_vertical",
+        "custom_keyword",
+        "search_cities",
+        "min_rating",
+        "min_reviews",
+        "max_results_per_run",
+        "exclude_franchises",
+        "require_preowned_keyword",
+        "prioritize_no_website",
+        "daily_lead_limit",
+        "daily_email_limit",
+      ].join(","),
     )
     .eq("user_id", user!.id)
     .single();
 
-  const settings = data as Pick<
-    Settings,
-    | "agency_name"
-    | "sender_name"
-    | "sender_email"
-    | "daily_lead_limit"
-    | "daily_email_limit"
-    | "icp_job_titles"
-    | "icp_industries"
-    | "icp_locations"
-  > | null;
+  const settings = data as Partial<Settings> | null;
 
-  const initial: SettingsFormValues = {
+  const initial: IcpFormInitial = {
     agency_name: settings?.agency_name ?? "Webiox",
-    sender_name: settings?.sender_name ?? "",
-    sender_email: settings?.sender_email ?? "",
+    sender_name: settings?.sender_name ?? null,
+    sender_email: settings?.sender_email ?? null,
+    target_vertical: settings?.target_vertical ?? "car_dealer",
+    custom_keyword: settings?.custom_keyword ?? null,
+    search_cities: settings?.search_cities ?? [...CITY_OPTIONS],
+    min_rating: settings?.min_rating ?? 4.0,
+    min_reviews: settings?.min_reviews ?? 100,
+    max_results_per_run: settings?.max_results_per_run ?? 50,
+    exclude_franchises: settings?.exclude_franchises ?? true,
+    require_preowned_keyword: settings?.require_preowned_keyword ?? false,
+    prioritize_no_website: settings?.prioritize_no_website ?? true,
     daily_lead_limit: settings?.daily_lead_limit ?? 50,
-    daily_email_limit: settings?.daily_email_limit ?? 100,
-    icp_job_titles: settings?.icp_job_titles ?? [],
-    icp_industries: settings?.icp_industries ?? [],
-    icp_locations: settings?.icp_locations ?? [],
+    daily_email_limit: settings?.daily_email_limit ?? 30,
   };
 
   return (
@@ -49,12 +60,12 @@ export default async function SettingsPage() {
       <div className="space-y-4 p-6">
         <div className="flex items-center gap-3">
           <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-[color:var(--color-text-muted)]">
-            // config · agency tuning
+            // config · ideal customer profile · agency tuning
           </span>
           <span className="h-px flex-1 bg-[color:var(--color-border-base)]" />
         </div>
 
-        <SettingsForm initial={initial} />
+        <IcpSettingsForm initial={initial} />
       </div>
     </>
   );

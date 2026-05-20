@@ -177,16 +177,19 @@ export function isFranchiseDealer(name: string): boolean {
 // ===== Google Places search ==================================================
 
 // Text-search a single vertical in a single city, running ALL queries and
-// deduplicating by place ID. Returns [] on any error — never throws.
+// deduplicating by place ID. If `customKeyword` is given, the vertical's
+// preset queries are replaced with a single `<keyword> <city>` query (see
+// `getQueriesForVertical`). Returns [] on any error — never throws.
 export async function searchPlacesForVertical(
   vertical: VerticalConfig,
   city: string,
   pageSize = 20,
+  customKeyword?: string | null,
 ): Promise<PlacesRaw[]> {
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   if (!apiKey) return [];
 
-  const queries = vertical.textQueries(city);
+  const queries = getQueriesForVertical(vertical, city, customKeyword);
   const allResults: PlacesRaw[] = [];
   const seenIds = new Set<string>();
 
@@ -245,11 +248,16 @@ export type PremiumOpts = {
   minReviews?: number;
   minRating?: number;
   excludeKeywords?: string[];
+  // Step 12 — driven by user settings. Both default to the strict legacy
+  // behavior so existing callers don't change shape.
+  excludeFranchises?: boolean;
+  requirePreownedKeyword?: boolean;
 };
 
 // Keep only premium-signal businesses: enough reviews, high rating, a usable
 // phone number, and a name that doesn't match the vertical's exclude list.
-// Also rejects franchise dealers via the blocklist.
+// Optionally rejects franchise dealers and/or requires a pre-owned keyword
+// in the name (independents-only mode).
 export function filterPremium(
   raws: PlacesRaw[],
   opts: PremiumOpts = {},
@@ -257,15 +265,25 @@ export function filterPremium(
   const minReviews = opts.minReviews ?? 100;
   const minRating = opts.minRating ?? 4.0;
   const excludes = (opts.excludeKeywords ?? []).map((k) => k.toLowerCase());
+  const excludeFranchises = opts.excludeFranchises ?? true;
+  const requirePreowned = opts.requirePreownedKeyword ?? false;
 
   return raws.filter((r) => {
     const name = (r.displayName?.text ?? "").toLowerCase();
 
-    // Reject franchises
-    if (isFranchiseDealer(name)) return false;
+    // Reject franchises (when the user wants independents only)
+    if (excludeFranchises && isFranchiseDealer(name)) return false;
 
     // Reject keyword matches (service centers, etc.)
     if (excludes.some((k) => name.includes(k))) return false;
+
+    // Strict independents filter — must mention pre-owned/used/etc.
+    if (
+      requirePreowned &&
+      !/(pre.?owned|used|second.?hand|exchange)/i.test(name)
+    ) {
+      return false;
+    }
 
     // Premium filters
     if ((r.userRatingCount ?? 0) < minReviews) return false;
@@ -276,6 +294,20 @@ export function filterPremium(
 
     return true;
   });
+}
+
+// Resolve the search queries for a given vertical/city pair, honoring a
+// user-supplied custom keyword override from settings. When `customKeyword` is
+// provided, it REPLACES the vertical's preset queries with a single query
+// per city.
+export function getQueriesForVertical(
+  vertical: VerticalConfig,
+  city: string,
+  customKeyword?: string | null,
+): string[] {
+  const kw = customKeyword?.trim();
+  if (kw) return [`${kw} ${city}`];
+  return vertical.textQueries(city);
 }
 
 // ===== Facebook Ad Library check =============================================
