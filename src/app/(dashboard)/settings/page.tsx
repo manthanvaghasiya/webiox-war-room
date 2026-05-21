@@ -30,6 +30,9 @@ export default async function SettingsPage() {
         "prioritize_no_website",
         "daily_lead_limit",
         "daily_email_limit",
+        "target_solutions",
+        "target_country",
+        "target_state",
       ].join(","),
     )
     .eq("user_id", user!.id)
@@ -37,13 +40,17 @@ export default async function SettingsPage() {
 
   const settings = data as Partial<Settings> | null;
 
+  const country = settings?.target_country ?? "IN";
+  const state = settings?.target_state ?? "GJ";
+  const defaultCities = CITY_OPTIONS[state] ?? CITY_OPTIONS.GJ ?? [];
+
   const initial: IcpFormInitial = {
     agency_name: settings?.agency_name ?? "Webiox",
     sender_name: settings?.sender_name ?? null,
     sender_email: settings?.sender_email ?? null,
     target_vertical: settings?.target_vertical ?? "car_dealer",
     custom_keyword: settings?.custom_keyword ?? null,
-    search_cities: settings?.search_cities ?? [...CITY_OPTIONS],
+    search_cities: settings?.search_cities ?? defaultCities,
     min_rating: settings?.min_rating ?? 4.0,
     min_reviews: settings?.min_reviews ?? 100,
     max_results_per_run: settings?.max_results_per_run ?? 50,
@@ -52,6 +59,13 @@ export default async function SettingsPage() {
     prioritize_no_website: settings?.prioritize_no_website ?? true,
     daily_lead_limit: settings?.daily_lead_limit ?? 50,
     daily_email_limit: settings?.daily_email_limit ?? 30,
+    target_solutions: settings?.target_solutions ?? [
+      "website",
+      "custom_software",
+      "automation",
+    ],
+    target_country: country,
+    target_state: state,
   };
 
   return (

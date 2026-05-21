@@ -1,11 +1,14 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { toast } from "sonner";
 
 import { saveIcpSettings } from "@/app/(dashboard)/settings/actions";
 import {
   CITY_OPTIONS,
+  COUNTRY_OPTIONS,
+  SOLUTION_FILTER_OPTIONS,
+  STATE_OPTIONS,
   VERTICAL_OPTIONS,
   type Settings,
 } from "@/types/database";
@@ -26,6 +29,9 @@ export type IcpFormInitial = Pick<
   | "prioritize_no_website"
   | "daily_lead_limit"
   | "daily_email_limit"
+  | "target_solutions"
+  | "target_country"
+  | "target_state"
 >;
 
 export function IcpSettingsForm({ initial }: { initial: IcpFormInitial }) {
@@ -33,15 +39,73 @@ export function IcpSettingsForm({ initial }: { initial: IcpFormInitial }) {
   const [rating, setRating] = useState(initial.min_rating ?? 4.0);
   const [error, setError] = useState<string | null>(null);
 
-  // Default cities = whatever's in DB, else all four. Empty array means user
-  // explicitly unselected everything — preserve that on subsequent renders.
-  const cityDefault = new Set(initial.search_cities ?? CITY_OPTIONS);
+  // ----- Solutions multi-select state -----
+  const initialSolutions = new Set(
+    initial.target_solutions ?? ["website", "custom_software", "automation"],
+  );
+  const [solutions, setSolutions] = useState<Set<string>>(initialSolutions);
+  const toggleSolution = (value: string) => {
+    setSolutions((prev) => {
+      const next = new Set(prev);
+      if (next.has(value)) next.delete(value);
+      else next.add(value);
+      return next;
+    });
+  };
+
+  // ----- Geography cascade state -----
+  const [country, setCountry] = useState(initial.target_country ?? "IN");
+  const [state, setState] = useState(initial.target_state ?? "GJ");
+  const [selectedCities, setSelectedCities] = useState<Set<string>>(
+    new Set(initial.search_cities ?? CITY_OPTIONS[state] ?? []),
+  );
+
+  // List of states for the current country (empty array = no list defined).
+  const statesForCountry = useMemo(
+    () => STATE_OPTIONS[country] ?? [],
+    [country],
+  );
+
+  // Cities for the current state.
+  const citiesForState = useMemo(
+    () => CITY_OPTIONS[state] ?? [],
+    [state],
+  );
+
+  // Switching countries resets state → first enabled state of new country and
+  // rechecks all cities for that state. Disabled options never become selected.
+  const handleCountryChange = (next: string) => {
+    setCountry(next);
+    const states = STATE_OPTIONS[next] ?? [];
+    const firstEnabled = states.find((s) => s.enabled)?.code;
+    if (firstEnabled) {
+      setState(firstEnabled);
+      setSelectedCities(new Set(CITY_OPTIONS[firstEnabled] ?? []));
+    } else {
+      setState("");
+      setSelectedCities(new Set());
+    }
+  };
+
+  // Switching state rechecks all cities for that state (sensible default; the
+  // user almost always wants the whole region they just picked).
+  const handleStateChange = (next: string) => {
+    setState(next);
+    setSelectedCities(new Set(CITY_OPTIONS[next] ?? []));
+  };
+
+  const toggleCity = (city: string) => {
+    setSelectedCities((prev) => {
+      const next = new Set(prev);
+      if (next.has(city)) next.delete(city);
+      else next.add(city);
+      return next;
+    });
+  };
 
   return (
     <form
       action={(formData) => {
-        // Client-side sanity check that doesn't replace the server check —
-        // server still validates if JS is disabled.
         if (formData.getAll("search_cities").length === 0) {
           setError("Select at least one city");
           return;
@@ -122,39 +186,156 @@ export function IcpSettingsForm({ initial }: { initial: IcpFormInitial }) {
             </p>
           </Field>
         </SectionCard>
+      </div>
 
-        {/* SECTION 3 — Geographic Coverage */}
-        <SectionCard title="ICP · Geographic Coverage">
-          <div className="grid grid-cols-2 gap-2">
-            {CITY_OPTIONS.map((city) => (
+      {/* SECTION 3 — Solutions I Pitch (full width) */}
+      <SectionCard title="ICP · Solutions I Pitch">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          {SOLUTION_FILTER_OPTIONS.map((opt) => {
+            const checked = solutions.has(opt.value);
+            return (
               <label
-                key={city}
-                className="flex cursor-pointer items-center gap-2 rounded-md border border-[color:var(--color-border-base)] bg-[color:var(--color-bg-base)]/40 px-3 py-2 transition hover:border-[color:var(--color-neon-green)]"
+                key={opt.value}
+                className={
+                  "group flex cursor-pointer items-center gap-3 rounded-md border px-4 py-3 transition " +
+                  (checked
+                    ? ""
+                    : "border-[color:var(--color-border-base)] bg-[color:var(--color-bg-base)]/40 hover:border-[color:var(--color-border-bright)]")
+                }
+                style={
+                  checked
+                    ? {
+                        borderColor: opt.color,
+                        backgroundColor: `color-mix(in srgb, ${opt.color} 12%, transparent)`,
+                      }
+                    : undefined
+                }
               >
                 <input
                   type="checkbox"
-                  name="search_cities"
-                  value={city}
-                  defaultChecked={cityDefault.has(city)}
+                  name="target_solutions"
+                  value={opt.value}
+                  checked={checked}
+                  onChange={() => toggleSolution(opt.value)}
                   className="h-4 w-4 accent-[color:var(--color-neon-green)]"
                 />
-                <span className="font-mono text-xs text-[color:var(--color-text-primary)]">
-                  {city}
+                <span className="text-xl" aria-hidden>
+                  {opt.emoji}
+                </span>
+                <span
+                  className="font-mono text-xs uppercase tracking-wider"
+                  style={{
+                    color: checked
+                      ? opt.color
+                      : "var(--color-text-primary)",
+                  }}
+                >
+                  {opt.label}
                 </span>
               </label>
-            ))}
-          </div>
-          {error ? (
-            <p className="font-mono text-[11px] text-[color:var(--color-neon-red)]">
-              {error}
+            );
+          })}
+        </div>
+        <p className="font-mono text-[10px] leading-relaxed text-[color:var(--color-text-muted)]">
+          Select what you want to sell. If all 3 (or none) selected → random
+          suitable lead, regardless of solution.
+        </p>
+      </SectionCard>
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        {/* SECTION 4 — Geographic Coverage (cascade) */}
+        <SectionCard title="ICP · Geographic Coverage">
+          <Field label="Country" htmlFor="target_country">
+            <select
+              id="target_country"
+              name="target_country"
+              value={country}
+              onChange={(e) => handleCountryChange(e.target.value)}
+              className={selectClass}
+            >
+              {COUNTRY_OPTIONS.map((opt) => (
+                <option
+                  key={opt.code}
+                  value={opt.code}
+                  disabled={!opt.enabled}
+                  style={
+                    !opt.enabled
+                      ? { color: "#666", fontStyle: "italic" }
+                      : undefined
+                  }
+                >
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Field label="State / Region" htmlFor="target_state">
+            <select
+              id="target_state"
+              name="target_state"
+              value={state}
+              onChange={(e) => handleStateChange(e.target.value)}
+              className={selectClass}
+              disabled={statesForCountry.length === 0}
+            >
+              {statesForCountry.length === 0 ? (
+                <option value="">— No states available —</option>
+              ) : (
+                statesForCountry.map((opt) => (
+                  <option
+                    key={opt.code}
+                    value={opt.code}
+                    disabled={!opt.enabled}
+                    style={
+                      !opt.enabled
+                        ? { color: "#666", fontStyle: "italic" }
+                        : undefined
+                    }
+                  >
+                    {opt.label}
+                  </option>
+                ))
+              )}
+            </select>
+          </Field>
+
+          <div className="space-y-1">
+            <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-[color:var(--color-text-muted)]">
+              Cities
+            </span>
+            <div className="grid grid-cols-2 gap-2">
+              {citiesForState.map((city) => (
+                <label
+                  key={city}
+                  className="flex cursor-pointer items-center gap-2 rounded-md border border-[color:var(--color-border-base)] bg-[color:var(--color-bg-base)]/40 px-3 py-2 transition hover:border-[color:var(--color-neon-green)]"
+                >
+                  <input
+                    type="checkbox"
+                    name="search_cities"
+                    value={city}
+                    checked={selectedCities.has(city)}
+                    onChange={() => toggleCity(city)}
+                    className="h-4 w-4 accent-[color:var(--color-neon-green)]"
+                  />
+                  <span className="font-mono text-xs text-[color:var(--color-text-primary)]">
+                    {city}
+                  </span>
+                </label>
+              ))}
+            </div>
+            {error ? (
+              <p className="font-mono text-[11px] text-[color:var(--color-neon-red)]">
+                {error}
+              </p>
+            ) : null}
+            <p className="font-mono text-[10px] text-[color:var(--color-text-muted)]">
+              At least one city required.
             </p>
-          ) : null}
-          <p className="font-mono text-[10px] text-[color:var(--color-text-muted)]">
-            At least one city required.
-          </p>
+          </div>
         </SectionCard>
 
-        {/* SECTION 4 — Premium Filters */}
+        {/* SECTION 5 — Premium Filters */}
         <SectionCard title="ICP · Premium Filters">
           <Field
             label={`Minimum rating: ${rating.toFixed(1)}★`}
@@ -205,7 +386,7 @@ export function IcpSettingsForm({ initial }: { initial: IcpFormInitial }) {
         </SectionCard>
       </div>
 
-      {/* SECTION 5 — Filter Toggles (full width) */}
+      {/* SECTION 6 — Filter Toggles (full width) */}
       <SectionCard title="ICP · Filter Toggles">
         <ToggleRow
           name="exclude_franchises"
@@ -227,7 +408,7 @@ export function IcpSettingsForm({ initial }: { initial: IcpFormInitial }) {
         />
       </SectionCard>
 
-      {/* SECTION 6 — Daily Limits */}
+      {/* SECTION 7 — Daily Limits */}
       <SectionCard title="Daily Limits">
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <Field label="Daily lead limit" htmlFor="daily_lead_limit">

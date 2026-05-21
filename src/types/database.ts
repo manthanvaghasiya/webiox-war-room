@@ -193,6 +193,11 @@ export interface Settings {
   exclude_franchises: boolean | null;
   require_preowned_keyword: boolean | null;
   prioritize_no_website: boolean | null;
+
+  // Step 14 — solution-pitch filter + geography cascade.
+  target_solutions: string[] | null;
+  target_country: string | null;
+  target_state: string | null;
 }
 
 // ICP dropdown options for the Settings UI. `defaultQueries` is informational
@@ -208,7 +213,51 @@ export const VERTICAL_OPTIONS = [
   { value: 'jewelry',    label: '💎 Jewelry Showrooms', defaultQueries: ['jewelry showroom', 'diamond jewelry', 'gold jewelry'] },
 ] as const;
 
-export const CITY_OPTIONS = ['Ahmedabad', 'Surat', 'Vadodara', 'Rajkot'] as const;
+// Step 14 — geography cascade.
+// CITY_OPTIONS is keyed by state code. Settings page reads
+// CITY_OPTIONS[state] to render the city checkboxes for the selected state.
+export const COUNTRY_OPTIONS = [
+  { code: "IN", label: "🇮🇳 India", enabled: true },
+  { code: "AE", label: "🇦🇪 UAE (Coming Soon)", enabled: false },
+  { code: "US", label: "🇺🇸 USA (Coming Soon)", enabled: false },
+  { code: "GB", label: "🇬🇧 UK (Coming Soon)", enabled: false },
+] as const;
+
+export const STATE_OPTIONS: Record<
+  string,
+  Array<{ code: string; label: string; enabled: boolean }>
+> = {
+  IN: [
+    { code: "GJ", label: "Gujarat", enabled: true },
+    { code: "MH", label: "Maharashtra (Coming Soon)", enabled: false },
+    { code: "DL", label: "Delhi (Coming Soon)", enabled: false },
+    { code: "KA", label: "Karnataka (Coming Soon)", enabled: false },
+    { code: "TN", label: "Tamil Nadu (Coming Soon)", enabled: false },
+  ],
+};
+
+export const CITY_OPTIONS: Record<string, string[]> = {
+  GJ: [
+    "Ahmedabad",
+    "Surat",
+    "Vadodara",
+    "Rajkot",
+    "Bhavnagar",
+    "Jamnagar",
+    "Gandhinagar",
+    "Junagadh",
+    "Anand",
+    "Bharuch",
+  ],
+};
+
+// Step 14 — what solutions the user wants to pitch. Drives the Lead Scout
+// filter: if 0 or all 3 are selected, scout returns random suitable leads.
+export const SOLUTION_FILTER_OPTIONS = [
+  { value: "website", emoji: "🌐", label: "Website", color: "#00ff88" },
+  { value: "custom_software", emoji: "⚙️", label: "Custom Software", color: "#a855f7" },
+  { value: "automation", emoji: "🤖", label: "Automation", color: "#fbbf24" },
+] as const;
 
 export interface Lead {
   id: string;

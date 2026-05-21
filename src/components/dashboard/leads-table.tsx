@@ -111,6 +111,47 @@ function AddressCell({
   );
 }
 
+// Step 14 — pulls the "SIGNALS: ... • ... • ..." line out of the
+// research_note so we can render it as a 2-line muted strip directly under
+// the Solution badge. Older notes that use the "SIGNALS:\n✓ rating ✓..."
+// multi-line format simply yield null and the strip is omitted.
+function extractSignalsLine(note: string | null): string | null {
+  if (!note) return null;
+  const idx = note.indexOf("SIGNALS:");
+  if (idx === -1) return null;
+  const after = note.slice(idx + "SIGNALS:".length);
+  // Take everything up to the next blank line; trim whitespace.
+  const stop = after.indexOf("\n\n");
+  const line = (stop === -1 ? after : after.slice(0, stop)).trim();
+  // Only render the inline format — multi-line checklists have ticks on
+  // their own line, which we deliberately skip.
+  if (!line || line.includes("\n")) return null;
+  return line;
+}
+
+function SolutionCell({
+  solution,
+  researchNote,
+}: {
+  solution: SolutionType | null;
+  researchNote: string | null;
+}) {
+  const signals = extractSignalsLine(researchNote);
+  return (
+    <div className="max-w-[280px] space-y-1">
+      <SolutionBadge solution={solution} />
+      {signals ? (
+        <p
+          className="line-clamp-2 font-mono text-[11px] leading-snug text-[color:var(--color-text-secondary)]"
+          title={signals}
+        >
+          {signals}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 // Why cell — solution_reason is primary; if research_note contains call scripts
 // (delimited by ---CALL SCRIPT markers), parse them into tabbed view.
 // The table column shows only the summary (text before the first marker).
@@ -505,7 +546,10 @@ export function LeadsTable({
                     />
                   </td>
                   <td className="px-4 py-3">
-                    <SolutionBadge solution={l.recommended_solution} />
+                    <SolutionCell
+                      solution={l.recommended_solution}
+                      researchNote={l.research_note}
+                    />
                   </td>
                   <td className="px-4 py-3">
                     <WhyCell

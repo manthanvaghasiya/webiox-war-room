@@ -6,12 +6,15 @@ import {
   GUJARAT_CITIES,
   VERTICALS,
   buildCallScript,
+  detectSolutionForLead,
   filterPremium,
   searchPlacesForVertical,
   stackSignals,
+  type DetectedSolution,
   type PlacesRaw,
   type SignalScore,
 } from "@/lib/agents/google-places-helpers";
+import { generateWhyReason } from "@/lib/agents/why-reason";
 import type {
   LeadChannel,
   LeadLanguage,
@@ -403,7 +406,7 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
       const { data: settings } = await ctx.supabase
         .from("settings")
         .select(
-          "target_vertical, search_cities, min_rating, min_reviews, max_results_per_run, custom_keyword, exclude_franchises, require_preowned_keyword, prioritize_no_website",
+          "target_vertical, search_cities, min_rating, min_reviews, max_results_per_run, custom_keyword, exclude_franchises, require_preowned_keyword, prioritize_no_website, target_solutions",
         )
         .eq("user_id", userId)
         .single();
@@ -545,10 +548,59 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
         });
       }
 
+      // Step 14 — classify each lead's recommended solution, then apply the
+      // user's target_solutions filter. `multi` always passes since it's a
+      // superset of every individual solution.
+      const ALL_TARGET_SOLUTIONS = [
+        "website",
+        "custom_software",
+        "automation",
+      ] as const;
+      const userSolutionsRaw: string[] =
+        settings?.target_solutions && settings.target_solutions.length > 0
+          ? settings.target_solutions
+          : [...ALL_TARGET_SOLUTIONS];
+      const userSolutions = userSolutionsRaw.filter(
+        (s: string): s is (typeof ALL_TARGET_SOLUTIONS)[number] =>
+          (ALL_TARGET_SOLUTIONS as readonly string[]).includes(s),
+      );
+      const isRandomMode =
+        userSolutions.length === 0 ||
+        userSolutions.length === ALL_TARGET_SOLUTIONS.length;
+
+      const detected = enriched.map((e) => ({
+        ...e,
+        solution: detectSolutionForLead({
+          raw: e.raw,
+          signals: e.signals,
+          vertical: verticalId,
+        }),
+      }));
+
+      let filtered = detected;
+      if (!isRandomMode) {
+        filtered = detected.filter(
+          (d) =>
+            d.solution === "multi" ||
+            (userSolutions as readonly string[]).includes(d.solution),
+        );
+        await ctx.log(
+          `Filtered ${detected.length} → ${filtered.length} leads matching solutions: ${userSolutions.join(", ")}`,
+          {
+            action: "solution_filter",
+            metadata: {
+              solutions: userSolutions,
+              before: detected.length,
+              after: filtered.length,
+            },
+          },
+        );
+      }
+
       // Tier first (confirmed > probable), confidence breaks the tie.
       // When prioritizeNoWebsite is on, NO-WEBSITE leads float to the top of
       // each tier — easier pitch.
-      enriched.sort((a, b) => {
+      filtered.sort((a, b) => {
         if (a.signals.tier !== b.signals.tier) {
           return a.signals.tier === "confirmed" ? -1 : 1;
         }
@@ -562,7 +614,7 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
 
       // Caller limit wins, falling back to the user's max_results_per_run.
       // Hard cap of 100 keeps a runaway setting from blowing up a run.
-      const top = enriched.slice(0, Math.min(opts.limit ?? maxResults, 100));
+      const top = filtered.slice(0, Math.min(opts.limit ?? maxResults, 100));
 
       const confirmedCount = top.filter(
         (e) => e.signals.tier === "confirmed",
@@ -583,18 +635,33 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
         },
       );
 
-      // Build a compact 8-signal checklist for the research note.
-      const signalsChecklist = (s: SignalScore): string =>
+      // Step 14 — single-line signals checklist that the leads table renders
+      // under the solution badge. Each tick on its own with " • " separators
+      // keeps the line scannable in the two-line clamp.
+      const buildSignalsLine = (
+        s: SignalScore,
+        raw: PlacesRaw,
+      ): string =>
         [
-          `${s.has_good_rating ? "✓" : "✗"} Rating ≥ threshold`,
-          `${s.has_review_volume ? "✓" : "✗"} Review volume ≥ threshold`,
-          `${s.has_working_phone ? "✓" : "✗"} Phone available`,
-          `${s.not_franchise ? "✓" : "✗"} Independent (not franchise)`,
-          `${s.has_recent_reviews ? "✓" : "✗"} Recent reviews (<60d)`,
-          `${s.running_paid_ads ? "✓" : "✗"} Running paid ads`,
-          `${s.has_instagram ? "✓" : "✗"} Active on Instagram`,
-          `${s.has_verified_email ? "✓" : "✗"} Verified email (Hunter)`,
-        ].join("\n");
+          s.has_good_rating && `${raw.rating ?? 0}★ rating ✓`,
+          s.has_review_volume && `${raw.userRatingCount ?? 0} reviews ✓`,
+          s.has_working_phone && "Phone available ✓",
+          s.not_franchise && "Independent business ✓",
+          s.has_recent_reviews && "Recent reviews ✓",
+          s.running_paid_ads && "Running paid ads ✓",
+          s.has_instagram && "Active Instagram ✓",
+          s.has_verified_email && "Email verified ✓",
+        ]
+          .filter(Boolean)
+          .join(" • ");
+
+      // Map the detected solution (filter space) to the DB enum
+      // (solution_type). 'custom_software' isn't in the enum — we store it as
+      // 'crm' since that's the closest semantic match for the agency.
+      const toDbSolution = (s: DetectedSolution): SolutionType => {
+        if (s === "custom_software") return "crm";
+        return s;
+      };
 
       // Insert into the leads table — idempotent via the (user_id, company)
       // unique index.
@@ -603,17 +670,6 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
         const raw = e.raw;
         const name = raw.displayName?.text ?? "Unknown";
         const hasWebsite = !!raw.websiteUri;
-
-        // Dual-offering recommendation. Multi-location / high-volume leads
-        // are biased toward custom software (CRM/automation) since their
-        // operational pain compounds with scale; no-website leads start at
-        // the bundled "multi" pitch since the website work is unmissable.
-        let recommended: SolutionType = "multi";
-        if (hasWebsite) {
-          if (e.multiLoc || (raw.userRatingCount ?? 0) >= 500) {
-            recommended = verticalId === "clinic" ? "crm" : "automation";
-          }
-        }
 
         // Pre-generate the call script and fold it into research_note so the
         // /leads page can surface + copy it without an extra fetch.
@@ -632,16 +688,25 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
 
         const tierUp = e.signals.tier.toUpperCase();
         const reasoningJoined = e.signals.reasoning.join(" • ");
-        const summary =
-          `TIER: ${tierUp}\n` +
-          `CONFIDENCE: ${e.signals.confidence}%\n` +
-          `SIGNALS:\n${signalsChecklist(e.signals)}\n` +
-          `INSTAGRAM: ${e.signals.instagram_url ?? "none"}\n` +
-          `LATEST REVIEW: ${e.signals.latest_review_date ?? "unknown"}` +
-          (e.multiLoc ? "\nMULTI-LOCATION: yes" : "");
+        const signalsLine = buildSignalsLine(e.signals, raw);
+
+        // Research-note layout:
+        //   SIGNALS: <ticks joined with •>   ← table extracts this line
+        //   <blank>
+        //   TIER / INSTAGRAM / LATEST REVIEW metadata
+        //   <blank>
+        //   ---CALL SCRIPT (Hinglish/English/Gujarati)---
+        const headerLines = [
+          `SIGNALS: ${signalsLine}`,
+          "",
+          `TIER: ${tierUp} (${e.signals.confidence}%)`,
+          `INSTAGRAM: ${e.signals.instagram_url ?? "none"}`,
+          `LATEST REVIEW: ${e.signals.latest_review_date ?? "unknown"}`,
+        ];
+        if (e.multiLoc) headerLines.push("MULTI-LOCATION: yes");
 
         const researchNote = [
-          summary,
+          ...headerLines,
           "",
           "---CALL SCRIPT (Hinglish)---",
           script.hinglish,
@@ -652,6 +717,21 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
           "---CALL SCRIPT (ગુજરાતી)---",
           script.gujarati,
         ].join("\n");
+
+        // AI-generated 1-sentence "Why this lead is hot" — shown directly
+        // in the WHY column. Falls back to a template if Anthropic is
+        // unavailable, so a missing key never blocks lead insertion.
+        const whyReason = await generateWhyReason({
+          business_name: name,
+          city: e.city,
+          rating: raw.rating ?? 0,
+          reviews: raw.userRatingCount ?? 0,
+          has_website: hasWebsite,
+          running_ads: e.signals.running_paid_ads,
+          has_instagram: e.signals.has_instagram,
+          solution: e.solution,
+          vertical_label: vertical.label,
+        });
 
         const lead = {
           user_id: userId,
@@ -677,8 +757,8 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
           source: "google_places",
           lead_score: e.signals.confidence,
           lead_score_reason: `${tierUp} — ${reasoningJoined}`,
-          recommended_solution: recommended,
-          solution_reason: reasoningJoined,
+          recommended_solution: toDbSolution(e.solution),
+          solution_reason: whyReason,
           research_note: researchNote,
         };
 

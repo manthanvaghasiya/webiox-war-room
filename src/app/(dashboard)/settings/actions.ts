@@ -30,6 +30,22 @@ export async function saveIcpSettings(formData: FormData) {
     return Number.isFinite(n) ? n : fallback;
   };
 
+  // Solutions filter. The scout treats 0 OR 3 selections as "random mode" —
+  // both store as the full set so downstream code can read it uniformly.
+  const ALL_SOLUTIONS = ["website", "custom_software", "automation"] as const;
+  const solutionsRaw = formData
+    .getAll("target_solutions")
+    .map(String)
+    .map((s) => s.trim())
+    .filter((s) => (ALL_SOLUTIONS as readonly string[]).includes(s));
+  const finalSolutions =
+    solutionsRaw.length === 0 || solutionsRaw.length === ALL_SOLUTIONS.length
+      ? [...ALL_SOLUTIONS]
+      : solutionsRaw;
+
+  const country = String(formData.get("target_country") ?? "IN").trim() || "IN";
+  const state = String(formData.get("target_state") ?? "GJ").trim() || "GJ";
+
   const updates = {
     agency_name: String(formData.get("agency_name") ?? "").trim() || null,
     sender_name: String(formData.get("sender_name") ?? "").trim() || null,
@@ -50,6 +66,9 @@ export async function saveIcpSettings(formData: FormData) {
       0,
       Math.round(parseNum("daily_email_limit", 30)),
     ),
+    target_solutions: finalSolutions,
+    target_country: country,
+    target_state: state,
     updated_at: new Date().toISOString(),
   };
 

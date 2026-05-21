@@ -634,6 +634,41 @@ export async function stackSignals(
   };
 }
 
+// ===== Solution detection ===================================================
+
+// Step 14 — classify each lead into one of four solution buckets so the user's
+// `target_solutions` setting can filter the scout's output. Distinct from
+// `recommended_solution` (DB enum: website/mobile_app/crm/automation/multi/none) —
+// callers map `custom_software` → `crm` when inserting into Postgres.
+export type DetectedSolution =
+  | "website"
+  | "custom_software"
+  | "automation"
+  | "multi";
+
+export function detectSolutionForLead(opts: {
+  raw: PlacesRaw;
+  signals: SignalScore;
+  vertical: string;
+}): DetectedSolution {
+  const { raw, signals } = opts;
+  const hasWebsite = !!raw.websiteUri;
+  const reviews = raw.userRatingCount ?? 0;
+
+  // No website → pure new-build pitch.
+  if (!hasWebsite) return "website";
+
+  // High-volume business → needs internal management software.
+  if (reviews >= 500) return "custom_software";
+
+  // Already spending on ads at mid-volume → automate the funnel before that
+  // ad spend leaks any further.
+  if (signals.running_paid_ads && reviews < 500) return "automation";
+
+  // Default = multi (best for upselling; pitch both).
+  return "multi";
+}
+
 // ===== Lead scoring ==========================================================
 
 export type ScoreInput = {
