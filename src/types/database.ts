@@ -198,6 +198,13 @@ export interface Settings {
   target_solutions: string[] | null;
   target_country: string | null;
   target_state: string | null;
+
+  // Step 15 — hands-off automation hunter. When automation_mode is true the
+  // Lead Scout ignores the manual ICP fields above and runs the autonomous
+  // multi-vertical sweep instead.
+  automation_mode: boolean | null;
+  automation_daily_target: number | null;
+  automation_min_confidence: number | null;
 }
 
 // ICP dropdown options for the Settings UI. `defaultQueries` is informational
@@ -258,6 +265,40 @@ export const SOLUTION_FILTER_OPTIONS = [
   { value: "custom_software", emoji: "⚙️", label: "Custom Software", color: "#a855f7" },
   { value: "automation", emoji: "🤖", label: "Automation", color: "#fbbf24" },
 ] as const;
+
+// Step 15 — hands-off automation mode sweeps 6 high-conversion verticals
+// across Gujarat tier-1 cities (priority, +10 confidence) and 10 metros.
+export const AUTOMATION_VERTICALS = [
+  "car_dealer",
+  "clinic",
+  "real_estate",
+  "school",
+  "jewelry",
+  "manufacturer",
+] as const;
+
+export const AUTOMATION_CITIES = {
+  tier1: [
+    "Ahmedabad",
+    "Surat",
+    "Vadodara",
+    "Rajkot",
+    "Bhavnagar",
+    "Gandhinagar",
+  ],
+  tier2: [
+    "Mumbai",
+    "Delhi",
+    "Bangalore",
+    "Pune",
+    "Hyderabad",
+    "Chennai",
+    "Kolkata",
+    "Jaipur",
+    "Indore",
+    "Lucknow",
+  ],
+} as const;
 
 export interface Lead {
   id: string;

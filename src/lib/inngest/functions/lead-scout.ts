@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 import { inngest, leadScoutEvent } from "../client";
-import { runAgent } from "@/lib/agents/runner";
+import { runAgent, type AgentContext } from "@/lib/agents/runner";
 import {
   GUJARAT_CITIES,
   VERTICALS,
@@ -15,11 +15,14 @@ import {
   type SignalScore,
 } from "@/lib/agents/google-places-helpers";
 import { generateWhyReason } from "@/lib/agents/why-reason";
-import type {
-  LeadChannel,
-  LeadLanguage,
-  LeadSegment,
-  SolutionType,
+import {
+  AUTOMATION_CITIES,
+  AUTOMATION_VERTICALS,
+  type LeadChannel,
+  type LeadLanguage,
+  type LeadSegment,
+  type Settings,
+  type SolutionType,
 } from "@/types/database";
 
 type LeadScoutEventData = {
@@ -406,10 +409,17 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
       const { data: settings } = await ctx.supabase
         .from("settings")
         .select(
-          "target_vertical, search_cities, min_rating, min_reviews, max_results_per_run, custom_keyword, exclude_franchises, require_preowned_keyword, prioritize_no_website, target_solutions",
+          "target_vertical, search_cities, min_rating, min_reviews, max_results_per_run, custom_keyword, exclude_franchises, require_preowned_keyword, prioritize_no_website, target_solutions, automation_mode, automation_daily_target, automation_min_confidence",
         )
         .eq("user_id", userId)
         .single();
+
+      // Step 15 — when automation_mode is ON, the user has chosen the
+      // hands-off hunter. Branch into runAutomationMode and skip the manual
+      // ICP path entirely. The settings row carries the threshold + target.
+      if (settings?.automation_mode) {
+        return await runAutomationMode(ctx, settings as Partial<Settings>);
+      }
 
       // Event payload still wins (lets us trigger one-off runs from the UI),
       // then settings, then sensible defaults if the user hasn't saved yet.
@@ -817,6 +827,336 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
       };
     },
   );
+}
+
+// ===== Automation mode =======================================================
+// Step 15 — hands-off hunter. Ignores manual ICP entirely and sweeps the 6
+// AUTOMATION_VERTICALS across Gujarat tier-1 (priority +10 confidence) and the
+// 10 metro tier-2 cities. Returns only leads at or above the user's chosen
+// confidence threshold (60-95, default 75), up to automation_daily_target
+// (1-15, default 5). Hard caps: 300 candidates fetched, 30 candidates
+// signal-stacked — keeps the per-run cost predictable.
+async function runAutomationMode(
+  ctx: AgentContext,
+  settings: Partial<Settings>,
+) {
+  if (!process.env.GOOGLE_PLACES_API_KEY) {
+    await ctx.log(
+      "Automation mode aborted: GOOGLE_PLACES_API_KEY is not set",
+      { action: "automation_no_key", level: "error" },
+    );
+    return {
+      mode: "automation" as const,
+      inserted: 0,
+      total: 0,
+    };
+  }
+
+  const minConfidence = Math.max(
+    60,
+    Math.min(95, settings.automation_min_confidence ?? 75),
+  );
+  const dailyTarget = Math.max(
+    1,
+    Math.min(15, settings.automation_daily_target ?? 5),
+  );
+
+  const verticals = AUTOMATION_VERTICALS as readonly string[];
+  const tier1Cities = AUTOMATION_CITIES.tier1 as readonly string[];
+  const tier2Cities = AUTOMATION_CITIES.tier2 as readonly string[];
+
+  await ctx.log(
+    `🪄 AUTOMATION MODE — hunting across ${verticals.length} verticals, Gujarat + ${tier2Cities.length} metros, ≥${minConfidence}% confidence, target ${dailyTarget} leads`,
+    {
+      action: "automation_start",
+      metadata: { minConfidence, dailyTarget, verticals: [...verticals] },
+    },
+  );
+
+  type AutomationRaw = PlacesRaw & {
+    __city?: string;
+    __vertical?: string;
+    __tier?: 1 | 2;
+  };
+
+  const allCandidates: AutomationRaw[] = [];
+  const CANDIDATE_HARD_CAP_TIER1 = 200;
+  const CANDIDATE_HARD_CAP_TOTAL = 300;
+  const STACK_HARD_CAP = 30;
+
+  // Phase 1 — Gujarat tier-1 first. These get a +10 confidence bonus later.
+  outerTier1: for (const city of tier1Cities) {
+    for (const verticalId of verticals) {
+      const vertical = VERTICALS[verticalId];
+      if (!vertical) continue;
+
+      const raws = await searchPlacesForVertical(vertical, city);
+      const filtered = filterPremium(raws, {
+        minReviews: 100,
+        minRating: 4.0,
+        excludeFranchises: true,
+        excludeKeywords: vertical.excludeKeywords,
+      });
+
+      for (const r of filtered) {
+        const a = r as AutomationRaw;
+        a.__city = city;
+        a.__vertical = verticalId;
+        a.__tier = 1;
+      }
+      allCandidates.push(...(filtered as AutomationRaw[]));
+
+      if (allCandidates.length >= CANDIDATE_HARD_CAP_TIER1) break outerTier1;
+    }
+  }
+
+  // Phase 2 — tier-2 metros, only if tier-1 didn't already saturate.
+  if (allCandidates.length < 100) {
+    outerTier2: for (const city of tier2Cities) {
+      for (const verticalId of verticals) {
+        const vertical = VERTICALS[verticalId];
+        if (!vertical) continue;
+
+        const raws = await searchPlacesForVertical(vertical, city);
+        const filtered = filterPremium(raws, {
+          minReviews: 100,
+          minRating: 4.0,
+          excludeFranchises: true,
+          excludeKeywords: vertical.excludeKeywords,
+        });
+
+        for (const r of filtered) {
+          const a = r as AutomationRaw;
+          a.__city = city;
+          a.__vertical = verticalId;
+          a.__tier = 2;
+        }
+        allCandidates.push(...(filtered as AutomationRaw[]));
+
+        if (allCandidates.length >= CANDIDATE_HARD_CAP_TOTAL) break outerTier2;
+      }
+    }
+  }
+
+  await ctx.log(
+    `Found ${allCandidates.length} premium candidates across all verticals/cities`,
+    {
+      action: "automation_candidates",
+      metadata: { count: allCandidates.length },
+    },
+  );
+
+  // Prioritize big businesses for the (expensive) signal-stacking step.
+  allCandidates.sort(
+    (a, b) => (b.userRatingCount ?? 0) - (a.userRatingCount ?? 0),
+  );
+
+  // Cap to (dailyTarget × 5) or 30, whichever is smaller — caps Hunter +
+  // Instagram + Ad-Library calls per run.
+  const toStack = allCandidates.slice(
+    0,
+    Math.min(dailyTarget * 5, STACK_HARD_CAP),
+  );
+
+  type Enriched = {
+    raw: AutomationRaw;
+    city: string;
+    vertical: string;
+    tier: 1 | 2;
+    signals: SignalScore;
+    solution: DetectedSolution;
+  };
+
+  const enriched: Enriched[] = [];
+  for (const raw of toStack) {
+    const vId = raw.__vertical ?? "car_dealer";
+    const city = raw.__city ?? "";
+    const tier = raw.__tier ?? 2;
+
+    const signals = await stackSignals({
+      raw,
+      city,
+      vertical: vId,
+      excludeFranchises: true,
+      minReviews: 100,
+      minRating: 4.0,
+    });
+
+    // Gujarat home-advantage bonus — applied AFTER the base score so the
+    // tier recomputation reflects the boost.
+    if (tier === 1) {
+      signals.confidence = Math.min(100, signals.confidence + 10);
+      signals.reasoning.push("Gujarat priority +10 (your home market)");
+      signals.tier =
+        signals.confidence >= 75
+          ? "confirmed"
+          : signals.confidence >= 50
+            ? "probable"
+            : "weak";
+    }
+
+    if (signals.confidence < minConfidence) {
+      await ctx.log(
+        `Skipped ${raw.displayName?.text ?? "Unknown"}: ${signals.confidence}% < ${minConfidence}% threshold`,
+        { action: "lead_below_threshold", level: "info" },
+      );
+      continue;
+    }
+
+    enriched.push({
+      raw,
+      city,
+      vertical: vId,
+      tier,
+      signals,
+      solution: detectSolutionForLead({ raw, signals, vertical: vId }),
+    });
+  }
+
+  enriched.sort((a, b) => b.signals.confidence - a.signals.confidence);
+  const top = enriched.slice(0, dailyTarget);
+
+  await ctx.log(
+    `🪄 ${top.length} top-tier leads selected (≥${minConfidence}% confidence)`,
+    {
+      action: "automation_top_selected",
+      level: "success",
+      metadata: { count: top.length, target: dailyTarget },
+    },
+  );
+
+  // Map detected solution → DB enum (same as realLeadScout).
+  const toDbSolution = (s: DetectedSolution): SolutionType => {
+    if (s === "custom_software") return "crm";
+    return s;
+  };
+
+  let inserted = 0;
+  for (const e of top) {
+    const vertical = VERTICALS[e.vertical];
+    if (!vertical) continue;
+
+    const businessName = e.raw.displayName?.text ?? "Unknown";
+    const hasWebsite = !!e.raw.websiteUri;
+
+    const whyReason = await generateWhyReason({
+      business_name: businessName,
+      city: e.city,
+      rating: e.raw.rating ?? 0,
+      reviews: e.raw.userRatingCount ?? 0,
+      has_website: hasWebsite,
+      running_ads: e.signals.running_paid_ads,
+      has_instagram: e.signals.has_instagram,
+      solution: e.solution,
+      vertical_label: vertical.label,
+    });
+
+    const callScript = buildCallScript({
+      name: businessName,
+      contactName: "Owner",
+      city: e.city,
+      vertical: e.vertical,
+      reasoning: e.signals.reasoning.join(" • "),
+      has_website: hasWebsite,
+      running_ads: e.signals.running_paid_ads,
+      has_instagram: e.signals.has_instagram,
+      rating: e.raw.rating,
+      reviews: e.raw.userRatingCount,
+    });
+
+    const signalsList = [
+      e.signals.has_good_rating && `${e.raw.rating ?? 0}★ rating ✓`,
+      e.signals.has_review_volume && `${e.raw.userRatingCount ?? 0} reviews ✓`,
+      e.signals.has_working_phone && "Phone available ✓",
+      e.signals.not_franchise && "Independent ✓",
+      e.signals.has_recent_reviews && "Recent reviews ✓",
+      e.signals.running_paid_ads && "Running ads ✓",
+      e.signals.has_instagram && "Active Instagram ✓",
+      e.signals.has_verified_email && "Email verified ✓",
+    ]
+      .filter(Boolean)
+      .join(" • ");
+
+    const researchNote =
+      `TIER: ${e.signals.tier.toUpperCase()} (${e.signals.confidence}%)\n` +
+      `SIGNALS: ${signalsList}\n` +
+      `INSTAGRAM: ${e.signals.instagram_url ?? "none"}\n` +
+      `VERTICAL: ${vertical.label}\n\n` +
+      `---CALL SCRIPT (Hinglish)---\n${callScript.hinglish}\n\n` +
+      `---ENGLISH---\n${callScript.english}\n\n` +
+      `---ગુજરાતી---\n${callScript.gujarati}`;
+
+    const lead = {
+      user_id: ctx.userId,
+      company: businessName,
+      first_name: "Owner",
+      last_name: "",
+      phone:
+        e.raw.internationalPhoneNumber ?? e.raw.nationalPhoneNumber ?? null,
+      website: e.raw.websiteUri ?? null,
+      industry: vertical.label,
+      business_category: e.vertical,
+      location: `${e.city}, India`,
+      address: e.raw.formattedAddress ?? null,
+      google_maps_url: e.raw.googleMapsUri ?? null,
+      google_rating: e.raw.rating ?? null,
+      review_count: e.raw.userRatingCount ?? null,
+      segment: "local_india" as LeadSegment,
+      preferred_channel: "whatsapp" as LeadChannel,
+      preferred_language: (e.tier === 1
+        ? "gujarati"
+        : "hinglish") as LeadLanguage,
+      status: "new" as const,
+      source: "google_places",
+      lead_score: e.signals.confidence,
+      lead_score_reason: `${e.signals.tier.toUpperCase()} — ${e.signals.reasoning
+        .slice(0, 3)
+        .join(" • ")}`,
+      recommended_solution: toDbSolution(e.solution),
+      solution_reason: whyReason,
+      research_note: researchNote,
+    };
+
+    const { error } = await ctx.supabase
+      .from("leads")
+      .upsert([lead], {
+        onConflict: "user_id,company",
+        ignoreDuplicates: true,
+      });
+
+    if (!error) {
+      inserted++;
+      await ctx.log(
+        `✓ ${businessName} (${e.signals.confidence}%) — ${e.city} (Tier ${e.tier}) — ${vertical.label}`,
+        {
+          action: "automation_lead_inserted",
+          target_table: "leads",
+          level: "success",
+          metadata: {
+            confidence: e.signals.confidence,
+            vertical: e.vertical,
+            city: e.city,
+            tier: e.tier,
+          },
+        },
+      );
+    }
+  }
+
+  await ctx.log(
+    `🪄 AUTOMATION COMPLETE: ${inserted}/${top.length} new top-tier leads added`,
+    {
+      action: "automation_summary",
+      level: "success",
+      metadata: { inserted, total: top.length, mode: "automation" },
+    },
+  );
+
+  return {
+    mode: "automation" as const,
+    inserted,
+    total: top.length,
+  };
 }
 
 export const leadScoutFn = inngest.createFunction(

@@ -32,12 +32,26 @@ export type IcpFormInitial = Pick<
   | "target_solutions"
   | "target_country"
   | "target_state"
+  | "automation_mode"
+  | "automation_daily_target"
+  | "automation_min_confidence"
 >;
 
 export function IcpSettingsForm({ initial }: { initial: IcpFormInitial }) {
   const [pending, startTransition] = useTransition();
   const [rating, setRating] = useState(initial.min_rating ?? 4.0);
   const [error, setError] = useState<string | null>(null);
+
+  // ----- Automation toggle state -----
+  const [automationOn, setAutomationOn] = useState(
+    initial.automation_mode ?? false,
+  );
+  const [automationConfidence, setAutomationConfidence] = useState(
+    initial.automation_min_confidence ?? 75,
+  );
+  const [automationTarget, setAutomationTarget] = useState(
+    initial.automation_daily_target ?? 5,
+  );
 
   // ----- Solutions multi-select state -----
   const initialSolutions = new Set(
@@ -106,7 +120,9 @@ export function IcpSettingsForm({ initial }: { initial: IcpFormInitial }) {
   return (
     <form
       action={(formData) => {
-        if (formData.getAll("search_cities").length === 0) {
+        // Cities are only required when automation is OFF. Automation mode
+        // ignores manual ICP settings anyway, so empty cities won't block save.
+        if (!automationOn && formData.getAll("search_cities").length === 0) {
           setError("Select at least one city");
           return;
         }
@@ -115,7 +131,9 @@ export function IcpSettingsForm({ initial }: { initial: IcpFormInitial }) {
           try {
             await saveIcpSettings(formData);
             toast.success(
-              "ICP saved. Next 'Hunt Real Leads' run uses these settings.",
+              automationOn
+                ? "🪄 Automation mode saved. Next scout run hunts top-tier leads automatically."
+                : "ICP saved. Next 'Hunt Real Leads' run uses these settings.",
             );
           } catch (err) {
             toast.error(err instanceof Error ? err.message : "Save failed");
@@ -124,6 +142,32 @@ export function IcpSettingsForm({ initial }: { initial: IcpFormInitial }) {
       }}
       className="space-y-6"
     >
+      {/* SECTION 0 — Automation Mode (always first) */}
+      <AutomationSection
+        on={automationOn}
+        setOn={setAutomationOn}
+        confidence={automationConfidence}
+        setConfidence={setAutomationConfidence}
+        target={automationTarget}
+        setTarget={setAutomationTarget}
+      />
+
+      {/* Manual ICP — visually grayed out when automation is ON. Inputs still
+          submit, the disabled look is opacity + an overlay banner only. */}
+      <div className="relative">
+        {automationOn ? (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-start justify-center pt-6">
+            <span className="rounded-md border border-[color:var(--color-neon-purple)] bg-[color:var(--color-bg-elevated)]/90 px-4 py-2 font-mono text-[10px] uppercase tracking-[0.25em] text-[color:var(--color-neon-purple)] shadow-[0_0_18px_color-mix(in_srgb,var(--color-neon-purple)_45%,transparent)]">
+              🪄 Automation is ON — these settings are ignored
+            </span>
+          </div>
+        ) : null}
+        <div
+          className={
+            "space-y-6 transition " +
+            (automationOn ? "opacity-50" : "opacity-100")
+          }
+        >
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         {/* SECTION 1 — Agency Identity */}
         <SectionCard title="Agency Identity">
@@ -433,6 +477,8 @@ export function IcpSettingsForm({ initial }: { initial: IcpFormInitial }) {
           </Field>
         </div>
       </SectionCard>
+        </div>
+      </div>
 
       <div className="flex items-center justify-end gap-3 pb-8">
         <button
@@ -440,10 +486,146 @@ export function IcpSettingsForm({ initial }: { initial: IcpFormInitial }) {
           disabled={pending}
           className="inline-flex items-center gap-2 rounded-md border border-[color:var(--color-neon-green)] bg-[color:var(--color-neon-green)]/10 px-5 py-2.5 font-mono text-xs uppercase tracking-[0.25em] text-[color:var(--color-neon-green)] transition hover:bg-[color:var(--color-neon-green)]/20 hover:shadow-[0_0_24px_var(--color-neon-green-dim)] disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {pending ? "Saving…" : "💾 SAVE ICP"}
+          {pending ? "Saving…" : automationOn ? "💾 SAVE AUTOMATION" : "💾 SAVE ICP"}
         </button>
       </div>
     </form>
+  );
+}
+
+// ===== Automation Section ====================================================
+
+function AutomationSection({
+  on,
+  setOn,
+  confidence,
+  setConfidence,
+  target,
+  setTarget,
+}: {
+  on: boolean;
+  setOn: (v: boolean) => void;
+  confidence: number;
+  setConfidence: (v: number) => void;
+  target: number;
+  setTarget: (v: number) => void;
+}) {
+  return (
+    <div
+      className="panel relative overflow-hidden p-5"
+      style={{
+        borderColor: on
+          ? "var(--color-neon-purple)"
+          : "var(--color-border-base)",
+        boxShadow: on
+          ? "0 0 22px color-mix(in srgb, var(--color-neon-purple) 35%, transparent)"
+          : undefined,
+      }}
+    >
+      <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-[color:var(--color-neon-purple)] to-transparent opacity-60" />
+      <div className="mb-4 flex items-baseline gap-3">
+        <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-[color:var(--color-neon-purple)]">
+          🪄 Automation Mode
+        </span>
+        <span className="h-px flex-1 bg-[color:var(--color-border-base)]" />
+        <span
+          className="font-mono text-[10px] uppercase tracking-[0.22em]"
+          style={{
+            color: on
+              ? "var(--color-neon-purple)"
+              : "var(--color-text-muted)",
+          }}
+        >
+          {on ? "ON" : "OFF"}
+        </span>
+      </div>
+
+      <label className="flex cursor-pointer items-start gap-4 rounded-md border border-[color:var(--color-border-base)] bg-[color:var(--color-bg-base)]/40 p-4 transition hover:border-[color:var(--color-neon-purple)]">
+        <input
+          type="checkbox"
+          name="automation_mode"
+          checked={on}
+          onChange={(e) => setOn(e.target.checked)}
+          className="peer sr-only"
+        />
+        <span
+          aria-hidden="true"
+          className="relative mt-0.5 inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full bg-[color:var(--color-bg-elevated)] ring-1 ring-[color:var(--color-border-base)] transition-colors peer-checked:bg-[color:var(--color-neon-purple)]/30 peer-checked:ring-[color:var(--color-neon-purple)]"
+        >
+          <span className="ml-0.5 inline-block h-4 w-4 transform rounded-full bg-[color:var(--color-text-secondary)] shadow transition peer-checked:translate-x-4 peer-checked:bg-[color:var(--color-neon-purple)]" />
+        </span>
+        <div className="flex-1 space-y-1">
+          <div className="font-mono text-xs uppercase tracking-wider text-[color:var(--color-text-primary)]">
+            Hands-off automation hunter
+          </div>
+          <p className="font-mono text-[10px] leading-relaxed text-[color:var(--color-text-muted)]">
+            When ON, Lead Scout ignores manual ICP and sweeps 6 high-conversion
+            verticals across Gujarat (priority) + 10 metros, returning only
+            top-tier leads.
+          </p>
+        </div>
+      </label>
+
+      <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+        <Field
+          label={`Confidence threshold: ${confidence}%`}
+          htmlFor="automation_min_confidence"
+        >
+          <input
+            id="automation_min_confidence"
+            name="automation_min_confidence"
+            type="range"
+            min={60}
+            max={95}
+            step={5}
+            value={confidence}
+            onChange={(e) => setConfidence(parseInt(e.target.value, 10))}
+            className="w-full accent-[color:var(--color-neon-purple)]"
+          />
+          <div className="flex justify-between font-mono text-[10px] text-[color:var(--color-text-muted)]">
+            <span>60%</span>
+            <span>95%</span>
+          </div>
+        </Field>
+        <Field label="Daily lead target" htmlFor="automation_daily_target">
+          <input
+            id="automation_daily_target"
+            name="automation_daily_target"
+            type="number"
+            min={1}
+            max={15}
+            step={1}
+            value={target}
+            onChange={(e) =>
+              setTarget(
+                Math.max(1, Math.min(15, parseInt(e.target.value || "5", 10))),
+              )
+            }
+            className={inputClass}
+          />
+          <p className="mt-1 font-mono text-[10px] text-[color:var(--color-text-muted)]">
+            Hard cap 15 / day for cost control.
+          </p>
+        </Field>
+      </div>
+
+      <div className="mt-4 space-y-2 rounded-md border border-[color:var(--color-border-base)] bg-[color:var(--color-bg-base)]/40 p-4">
+        <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-[color:var(--color-neon-purple)]">
+          When ON, AI scans
+        </p>
+        <ul className="space-y-1 font-mono text-[11px] text-[color:var(--color-text-secondary)]">
+          <li>📍 Gujarat tier-1 (priority, +10 confidence) + 10 Indian metros</li>
+          <li>
+            🏢 Car dealers • Clinics • Real Estate • Schools • Jewelry •
+            Manufacturers
+          </li>
+          <li>✓ Premium signals only (≥{confidence}% confidence)</li>
+        </ul>
+        <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.22em] text-[color:var(--color-text-muted)]">
+          Manual settings below are ignored.
+        </p>
+      </div>
+    </div>
   );
 }
 

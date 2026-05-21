@@ -14,6 +14,26 @@ export async function saveIcpSettings(formData: FormData) {
   } = await supabase.auth.getUser();
   if (!user) throw new Error("Not authenticated");
 
+  // Step 15 — automation mode flag. When ON, the cities list isn't required
+  // since the autonomous scout uses its own city set.
+  const automationMode = formData.get("automation_mode") === "on";
+  const automationConfidence = Math.max(
+    60,
+    Math.min(
+      95,
+      parseInt(String(formData.get("automation_min_confidence") ?? "75"), 10) ||
+        75,
+    ),
+  );
+  const automationDailyTarget = Math.max(
+    1,
+    Math.min(
+      15,
+      parseInt(String(formData.get("automation_daily_target") ?? "5"), 10) ||
+        5,
+    ),
+  );
+
   // FormData.getAll() returns one entry per checked checkbox with the same
   // `name="search_cities"` attribute — preserves no-JS behavior.
   const cities = formData
@@ -21,7 +41,8 @@ export async function saveIcpSettings(formData: FormData) {
     .map(String)
     .map((s) => s.trim())
     .filter(Boolean);
-  if (cities.length === 0) throw new Error("Select at least one city");
+  if (!automationMode && cities.length === 0)
+    throw new Error("Select at least one city");
 
   const parseNum = (key: string, fallback: number): number => {
     const raw = String(formData.get(key) ?? "").trim();
@@ -53,7 +74,9 @@ export async function saveIcpSettings(formData: FormData) {
     target_vertical: String(formData.get("target_vertical") ?? "car_dealer"),
     custom_keyword:
       String(formData.get("custom_keyword") ?? "").trim() || null,
-    search_cities: cities,
+    // Preserve previously-saved cities when automation is on and the user
+    // submitted an empty city list (manual ICP is invisible-ignored).
+    ...(cities.length > 0 ? { search_cities: cities } : {}),
     min_rating: parseNum("min_rating", 4.0),
     min_reviews: Math.round(parseNum("min_reviews", 100)),
     max_results_per_run: Math.round(parseNum("max_results_per_run", 50)),
@@ -69,6 +92,9 @@ export async function saveIcpSettings(formData: FormData) {
     target_solutions: finalSolutions,
     target_country: country,
     target_state: state,
+    automation_mode: automationMode,
+    automation_min_confidence: automationConfidence,
+    automation_daily_target: automationDailyTarget,
     updated_at: new Date().toISOString(),
   };
 

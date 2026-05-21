@@ -33,6 +33,9 @@ export default async function SettingsPage() {
         "target_solutions",
         "target_country",
         "target_state",
+        "automation_mode",
+        "automation_daily_target",
+        "automation_min_confidence",
       ].join(","),
     )
     .eq("user_id", user!.id)
@@ -66,6 +69,9 @@ export default async function SettingsPage() {
     ],
     target_country: country,
     target_state: state,
+    automation_mode: settings?.automation_mode ?? false,
+    automation_daily_target: settings?.automation_daily_target ?? 5,
+    automation_min_confidence: settings?.automation_min_confidence ?? 75,
   };
 
   return (

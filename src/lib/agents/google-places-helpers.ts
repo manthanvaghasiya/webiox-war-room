@@ -69,6 +69,36 @@ export const VERTICALS: Record<string, VerticalConfig> = {
     label: "Jewelry Showroom",
     textQueries: (city) => [`jewelry showroom ${city} Gujarat`],
   },
+  real_estate: {
+    id: "real_estate",
+    label: "Real Estate Builder/Broker",
+    textQueries: (city) => [
+      `real estate builder ${city}`,
+      `property developer ${city}`,
+      `real estate broker ${city}`,
+    ],
+    excludeKeywords: ["rental", "rent", "PG", "paying guest"],
+  },
+  school: {
+    id: "school",
+    label: "School / Coaching Institute",
+    textQueries: (city) => [
+      `coaching institute ${city}`,
+      `tuition classes ${city}`,
+      `private school ${city}`,
+    ],
+    excludeKeywords: ["government", "public school", "municipality"],
+  },
+  manufacturer: {
+    id: "manufacturer",
+    label: "Manufacturer / B2B Trader",
+    textQueries: (city) => [
+      `manufacturer ${city} india`,
+      `wholesaler ${city}`,
+      `B2B exporter ${city}`,
+    ],
+    excludeKeywords: ["retail", "shop", "showroom"],
+  },
 };
 
 export const GUJARAT_CITIES = ["Ahmedabad", "Surat", "Vadodara", "Rajkot"];

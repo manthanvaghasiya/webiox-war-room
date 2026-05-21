@@ -7,6 +7,7 @@ import {
   Repeat,
   Send,
   ShieldCheck,
+  Sparkles,
   type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -32,18 +33,34 @@ type AgentAction = {
   glow?: boolean; // render a neon glow to highlight a hero action
 };
 
+// Lead scout action — the label/sublabel/icon swap between manual and
+// automation modes is applied dynamically in AgentActionButtons.
+const LEAD_SCOUT_ACTION_MANUAL: AgentAction = {
+  id: "lead_scout_real",
+  agent: "lead_scout",
+  label: "🔥 Hunt Real Gujarat Leads",
+  sublabel: "Manual settings",
+  successToast: "🔥 Real Lead Scout dispatched — this can take 1-3 min",
+  action: triggerLeadScoutReal,
+  icon: Flame,
+  color: "#00ff88",
+  glow: true,
+};
+
+const LEAD_SCOUT_ACTION_AUTOMATION: AgentAction = {
+  id: "lead_scout_real",
+  agent: "lead_scout",
+  label: "🪄 RUN AUTOMATION",
+  sublabel: "AI hunts top-tier leads (5/day)",
+  successToast: "🪄 Automation hunter dispatched — this can take 2-4 min",
+  action: triggerLeadScoutReal,
+  icon: Sparkles,
+  color: "#a855f7",
+  glow: true,
+};
+
 const AGENT_ACTIONS: AgentAction[] = [
-  {
-    id: "lead_scout_real",
-    agent: "lead_scout",
-    label: "🔥 Hunt Real Gujarat Leads",
-    sublabel: "Car dealers, ≥100 reviews",
-    successToast: "🔥 Real Lead Scout dispatched — this can take 1-3 min",
-    action: triggerLeadScoutReal,
-    icon: Flame,
-    color: "#00ff88",
-    glow: true,
-  },
+  LEAD_SCOUT_ACTION_MANUAL,
   {
     id: "data_enricher",
     agent: "data_enricher",
@@ -86,10 +103,20 @@ const AGENT_ACTIONS: AgentAction[] = [
   },
 ];
 
-export function AgentActionButtons() {
+export function AgentActionButtons({
+  automationMode = false,
+}: {
+  automationMode?: boolean;
+}) {
+  // Swap the lead_scout_real card for the automation variant when ON.
+  const actions = AGENT_ACTIONS.map((a) =>
+    a.id === "lead_scout_real" && automationMode
+      ? LEAD_SCOUT_ACTION_AUTOMATION
+      : a,
+  );
   return (
     <div className="flex w-full gap-3 overflow-x-auto pb-1">
-      {AGENT_ACTIONS.map((a) => (
+      {actions.map((a) => (
         <AgentActionButton key={a.id} action={a} />
       ))}
     </div>

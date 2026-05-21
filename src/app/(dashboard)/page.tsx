@@ -141,12 +141,22 @@ export default async function CommandCenterPage() {
   } = await supabase.auth.getUser();
   const userId = user!.id;
 
-  const [stats, logs, solutionCounts, campaignCounts] = await Promise.all([
-    fetchMissionStats(userId),
-    fetchRecentLogs(userId),
-    fetchSolutionCounts(userId),
-    fetchCampaignCounts(userId),
-  ]);
+  const [stats, logs, solutionCounts, campaignCounts, settingsRow] =
+    await Promise.all([
+      fetchMissionStats(userId),
+      fetchRecentLogs(userId),
+      fetchSolutionCounts(userId),
+      fetchCampaignCounts(userId),
+      supabase
+        .from("settings")
+        .select("automation_mode")
+        .eq("user_id", userId)
+        .single(),
+    ]);
+
+  const automationMode =
+    (settingsRow.data as { automation_mode: boolean | null } | null)
+      ?.automation_mode ?? false;
 
   const cards: {
     label: string;
@@ -269,7 +279,7 @@ export default async function CommandCenterPage() {
                 </p>
               </div>
             </div>
-            <AgentActionButtons />
+            <AgentActionButtons automationMode={automationMode} />
           </div>
         </section>
 
