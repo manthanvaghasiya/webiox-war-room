@@ -341,7 +341,30 @@ export interface Lead {
   address: string | null;
   recommended_solution: SolutionType | null;
   solution_reason: string | null;
+
+  // Step 16 — call outcome system. Manthan marks each lead after the call;
+  // confirmed leads auto-flow to /deals.
+  call_outcome: CallOutcome | null;
+  call_notes: string | null;
+  follow_up_draft: string | null;
+  call_decided_at: string | null;
 }
+
+// Step 16 — outcome of the manual call Manthan makes to each lead.
+export type CallOutcome =
+  | "pending_call"
+  | "confirmed"
+  | "rejected"
+  | "follow_up";
+
+// Display metadata for the call-outcome buttons + badges on /leads and
+// /leads/[id]. `follow_up` is surfaced to the user as "Pending".
+export const CALL_OUTCOME_OPTIONS = [
+  { value: "pending_call", label: "⏸ Not Called", color: "#6b7280", emoji: "⏸" },
+  { value: "confirmed", label: "✅ Confirmed", color: "#00ff88", emoji: "✅" },
+  { value: "rejected", label: "❌ Rejected", color: "#ef4444", emoji: "❌" },
+  { value: "follow_up", label: "⏳ Pending", color: "#fbbf24", emoji: "⏳" },
+] as const;
 
 export interface QualifiedLead {
   id: string;

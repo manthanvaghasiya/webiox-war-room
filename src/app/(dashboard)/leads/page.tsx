@@ -46,7 +46,7 @@ export default async function LeadsPage({
   const { data } = await supabase
     .from("leads")
     .select(
-      "id,first_name,last_name,full_name,company,job_title,email,email_verified,phone,address,website,research_note,recommended_solution,solution_reason,status,lead_score,lead_score_reason,segment,created_at",
+      "id,first_name,last_name,full_name,company,job_title,email,email_verified,phone,address,website,research_note,recommended_solution,solution_reason,status,lead_score,lead_score_reason,segment,created_at,call_outcome,call_notes,follow_up_draft,google_rating,review_count",
     )
     .eq("user_id", userId)
     .order("lead_score", { ascending: false })

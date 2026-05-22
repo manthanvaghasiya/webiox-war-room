@@ -1,19 +1,30 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
 import { formatDistanceToNow } from "date-fns";
-import { Check, Copy, ExternalLink, Info } from "lucide-react";
+import { ArrowUpRight, Check, Copy, ExternalLink, Info } from "lucide-react";
 
 import { createClient } from "@/lib/supabase/client";
 import { AgentActionInline } from "@/components/dashboard/agent-action-buttons";
+import {
+  LeadCallDrawer,
+  type DrawerLead,
+} from "@/components/dashboard/lead-call-drawer";
 import {
   ScoreBadge,
   SegmentBadge,
   SolutionBadge,
   TierBadge,
 } from "@/components/dashboard/lead-badges";
-import { type Lead, type LeadStatus, type SolutionType } from "@/types/database";
+import {
+  CALL_OUTCOME_OPTIONS,
+  type CallOutcome,
+  type Lead,
+  type LeadStatus,
+  type SolutionType,
+} from "@/types/database";
 
 export type LeadRow = Pick<
   Lead,
@@ -36,7 +47,80 @@ export type LeadRow = Pick<
   | "lead_score_reason"
   | "segment"
   | "created_at"
+  | "call_outcome"
+  | "call_notes"
+  | "follow_up_draft"
+  | "google_rating"
+  | "review_count"
 >;
+
+type DecidableOutcome = Exclude<CallOutcome, "pending_call">;
+
+const OUTCOME_BY_VALUE = Object.fromEntries(
+  CALL_OUTCOME_OPTIONS.map((o) => [o.value, o]),
+) as Record<CallOutcome, (typeof CALL_OUTCOME_OPTIONS)[number]>;
+
+// The three quick-action buttons shown in the OUTCOME column.
+const OUTCOME_BUTTONS: ReadonlyArray<{
+  value: DecidableOutcome;
+  emoji: string;
+  color: string;
+  title: string;
+}> = [
+  { value: "confirmed", emoji: "✅", color: "#00ff88", title: "Confirmed" },
+  { value: "rejected", emoji: "❌", color: "#ef4444", title: "Rejected" },
+  { value: "follow_up", emoji: "⏳", color: "#fbbf24", title: "Pending" },
+];
+
+function OutcomeCell({
+  lead,
+  onPick,
+}: {
+  lead: LeadRow;
+  onPick: (lead: LeadRow, outcome: DecidableOutcome) => void;
+}) {
+  const current = lead.call_outcome ?? "pending_call";
+  const meta = OUTCOME_BY_VALUE[current];
+  const decided = current !== "pending_call";
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-1">
+        {OUTCOME_BUTTONS.map((b) => {
+          const active = current === b.value;
+          return (
+            <button
+              key={b.value}
+              type="button"
+              title={b.title}
+              onClick={() => onPick(lead, b.value)}
+              className="rounded border px-1.5 py-1 text-xs leading-none transition hover:brightness-125"
+              style={{
+                borderColor: active ? b.color : "var(--color-border-base)",
+                backgroundColor: active
+                  ? `color-mix(in srgb, ${b.color} 18%, transparent)`
+                  : "transparent",
+                opacity: active ? 1 : 0.75,
+              }}
+            >
+              <span aria-hidden>{b.emoji}</span>
+            </button>
+          );
+        })}
+      </div>
+      {decided ? (
+        <span
+          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider"
+          style={{
+            color: meta.color,
+            backgroundColor: `color-mix(in srgb, ${meta.color} 16%, transparent)`,
+          }}
+        >
+          {meta.label}
+        </span>
+      ) : null}
+    </div>
+  );
+}
 
 const STATUS_TONE: Record<LeadStatus, string> = {
   new: "bg-[color:var(--color-bg-elevated)] text-[color:var(--color-text-secondary)]",
@@ -377,6 +461,28 @@ export function LeadsTable({
 }) {
   const [leads, setLeads] = useState<LeadRow[]>(initialLeads);
 
+  // Call-outcome drawer state — which lead is open and which button was clicked.
+  const [drawerLead, setDrawerLead] = useState<LeadRow | null>(null);
+  const [drawerOutcome, setDrawerOutcome] =
+    useState<DecidableOutcome>("confirmed");
+  const openDrawer = (lead: LeadRow, outcome: DecidableOutcome) => {
+    setDrawerLead(lead);
+    setDrawerOutcome(outcome);
+  };
+  const drawerLeadSummary: DrawerLead | null = drawerLead
+    ? {
+        id: drawerLead.id,
+        company: drawerLead.company,
+        phone: drawerLead.phone,
+        google_rating: drawerLead.google_rating,
+        review_count: drawerLead.review_count,
+        recommended_solution: drawerLead.recommended_solution,
+        call_outcome: drawerLead.call_outcome,
+        call_notes: drawerLead.call_notes,
+        follow_up_draft: drawerLead.follow_up_draft,
+      }
+    : null;
+
   useEffect(() => {
     const supabase = createClient();
     const channel = supabase
@@ -471,8 +577,9 @@ export function LeadsTable({
   }
 
   return (
+    <>
     <div className="panel overflow-x-auto">
-      <table className="w-full min-w-[1300px] text-sm">
+      <table className="w-full min-w-[1400px] text-sm">
         <thead>
           <tr className="border-b border-[color:var(--color-border-base)] text-left text-[10px] uppercase tracking-[0.22em] text-[color:var(--color-text-muted)]">
             <th className="px-4 py-3 font-normal">Segment</th>
@@ -482,12 +589,14 @@ export function LeadsTable({
             <th className="px-4 py-3 font-normal">Contact</th>
             <th className="px-4 py-3 font-normal">Address</th>
             <th className="px-4 py-3 font-normal">Solution</th>
+            <th className="px-4 py-3 font-normal">Outcome</th>
             <th className="px-4 py-3 font-normal">Why</th>
             <th className="px-4 py-3 font-normal">Status</th>
             <th className="px-4 py-3 font-normal text-center">Verified</th>
             <th className="px-4 py-3 font-normal">Tier</th>
             <th className="px-4 py-3 font-normal text-right">Score</th>
             <th className="px-4 py-3 font-normal text-right">Created</th>
+            <th className="px-4 py-3 font-normal text-right">Detail</th>
           </tr>
         </thead>
         <tbody>
@@ -552,6 +661,9 @@ export function LeadsTable({
                     />
                   </td>
                   <td className="px-4 py-3">
+                    <OutcomeCell lead={l} onPick={openDrawer} />
+                  </td>
+                  <td className="px-4 py-3">
                     <WhyCell
                       reason={l.solution_reason}
                       researchNote={l.research_note}
@@ -594,6 +706,16 @@ export function LeadsTable({
                       addSuffix: true,
                     })}
                   </td>
+                  <td className="px-4 py-3 text-right">
+                    <Link
+                      href={`/leads/${l.id}`}
+                      title="Open detail"
+                      className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-[color:var(--color-text-muted)] transition hover:text-[color:var(--color-neon-green)]"
+                    >
+                      Open
+                      <ArrowUpRight className="size-3" />
+                    </Link>
+                  </td>
                 </motion.tr>
               );
             })}
@@ -601,5 +723,12 @@ export function LeadsTable({
         </tbody>
       </table>
     </div>
+    <LeadCallDrawer
+      lead={drawerLeadSummary}
+      open={drawerLead !== null}
+      initialOutcome={drawerOutcome}
+      onClose={() => setDrawerLead(null)}
+    />
+    </>
   );
 }
