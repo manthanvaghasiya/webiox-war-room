@@ -15,9 +15,10 @@ import {
 import { createClient } from "@/lib/supabase/server";
 import type { CallOutcome, Lead } from "@/types/database";
 
-// Canonical 8-signal checklist. We can only see the signals that fired (the
+// Canonical 11-signal checklist. We can only see the signals that fired (the
 // research_note SIGNALS line lists positives only), so each row is ✓ when its
-// keyword appears in that line, ✗ otherwise.
+// keyword appears in that line, ✗ otherwise. The last three are the Step 17
+// deep-verification checks.
 const SIGNAL_CHECKS: ReadonlyArray<{ label: string; test: RegExp }> = [
   { label: "Good rating", test: /★ rating/ },
   { label: "Review volume", test: /\d[\d,]*\s*reviews ✓/ },
@@ -25,8 +26,11 @@ const SIGNAL_CHECKS: ReadonlyArray<{ label: string; test: RegExp }> = [
   { label: "Independent (not franchise)", test: /Independent/ },
   { label: "Recent reviews", test: /Recent reviews/ },
   { label: "Running paid ads", test: /Running (paid )?ads/ },
-  { label: "Active Instagram", test: /Instagram/ },
+  { label: "Active Instagram", test: /Active Instagram/ },
   { label: "Email verified", test: /Email verified/ },
+  { label: "Strong IG following (500+)", test: /IG followers ✓/ },
+  { label: "Established domain (2y+)", test: /domain ✓/ },
+  { label: "GST registered", test: /GST registered ✓/ },
 ];
 
 function extractSignalsLine(note: string | null): string {
@@ -233,6 +237,61 @@ export default async function LeadDetailPage({
                   );
                 })}
               </ul>
+            </div>
+
+            {/* Step 17 — deep verification (Instagram / domain / GST) */}
+            <div className="space-y-2">
+              <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-[color:var(--color-text-muted)]">
+                🔍 Deep verification
+              </span>
+              <dl className="space-y-2.5">
+                <IntelRow label="Instagram">
+                  {lead.instagram_handle ? (
+                    <a
+                      href={`https://instagram.com/${lead.instagram_handle}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 font-mono text-xs text-[color:var(--color-neon-green)] hover:underline"
+                    >
+                      @{lead.instagram_handle}
+                      {lead.instagram_followers != null
+                        ? ` · ${lead.instagram_followers.toLocaleString("en-IN")} followers`
+                        : ""}
+                      <ExternalLink className="size-3" />
+                    </a>
+                  ) : (
+                    <Dash />
+                  )}
+                </IntelRow>
+
+                <IntelRow label="Domain age">
+                  {lead.domain_age_years != null ? (
+                    <span className="font-mono text-xs text-[color:var(--color-text-secondary)]">
+                      {websiteHost ? `${websiteHost} · ` : ""}
+                      {lead.domain_age_years} years old
+                    </span>
+                  ) : (
+                    <Dash />
+                  )}
+                </IntelRow>
+
+                <IntelRow label="GST">
+                  {lead.gstin ? (
+                    <span className="inline-flex items-center gap-1.5 font-mono text-xs text-[color:var(--color-text-secondary)]">
+                      <span>{lead.gstin}</span>
+                      {lead.gst_verified ? (
+                        <span style={{ color: "var(--color-neon-green)" }}>
+                          ✓
+                        </span>
+                      ) : null}
+                    </span>
+                  ) : (
+                    <span className="font-mono text-xs text-[color:var(--color-text-muted)]">
+                      Not detected
+                    </span>
+                  )}
+                </IntelRow>
+              </dl>
             </div>
 
             {/* Why reason */}

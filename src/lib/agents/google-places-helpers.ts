@@ -449,32 +449,44 @@ export async function checkRecentReviews(
   return { has_recent, latest_review_date: latestIso };
 }
 
-// ===== Instagram profile lookup (DuckDuckGo HTML) ===========================
+// ===== Instagram profile + followers (DuckDuckGo HTML + profile page) ========
 
-// Search-based Instagram presence check — no Meta API needed. We can't
-// reliably get follower counts via HTTP, so "active" simply means a profile
-// URL was found. Profile URLs only — /p/ post and /reel/ links are ignored.
-export async function findInstagramProfile(
+// Step 17 — upgraded Instagram check. First resolves the profile via
+// DuckDuckGo (robust link parsing: decodes /l/?uddg= redirect wrappers, rejects
+// /p/, /reel/, /explore/, etc.), then fetches the public profile page and pulls
+// the follower count out of the og:description meta ("1,234 Followers, ...").
+// Every step degrades to nulls: a blocked profile fetch still returns the
+// handle/url we found, and "active" simply means a profile URL was located.
+export async function getInstagramData(
   businessName: string,
   city: string,
-): Promise<{ url: string | null; active: boolean }> {
-  if (!businessName.trim()) return { url: null, active: false };
+): Promise<{
+  handle: string | null;
+  url: string | null;
+  followers: number | null;
+  active: boolean;
+}> {
+  const miss = { handle: null, url: null, followers: null, active: false };
+  if (!businessName.trim()) return miss;
 
   const q = encodeURIComponent(
     `site:instagram.com "${businessName}" ${city}`.trim(),
   );
-  const res = await fetchWithTimeout(`https://html.duckduckgo.com/html/?q=${q}`, {
-    headers: { "User-Agent": "Mozilla/5.0 (compatible; WebioxBot/1.0)" },
-  });
-  if (!res || !res.ok) return { url: null, active: false };
+  const searchRes = await fetchWithTimeout(
+    `https://html.duckduckgo.com/html/?q=${q}`,
+    { headers: { "User-Agent": "Mozilla/5.0 (compatible; WebioxBot/1.0)" } },
+  );
+  if (!searchRes || !searchRes.ok) return miss;
 
   let html: string;
   try {
-    html = await res.text();
+    html = await searchRes.text();
   } catch {
-    return { url: null, active: false };
+    return miss;
   }
 
+  // Resolve the first real instagram.com/<handle> profile link.
+  let handle: string | null = null;
   const linkRe = /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"/gi;
   let m: RegExpExecArray | null;
   while ((m = linkRe.exec(html))) {
@@ -518,10 +530,125 @@ export async function findInstagramProfile(
     }
     if (!/^[A-Za-z0-9._]{1,30}$/.test(segments[0])) continue;
 
-    return { url: `https://instagram.com/${segments[0]}`, active: true };
+    handle = segments[0];
+    break;
   }
 
-  return { url: null, active: false };
+  if (!handle) return miss;
+  const url = `https://instagram.com/${handle}`;
+
+  // Fetch the public profile page for the follower count. Instagram serves a
+  // meta description like "1,234 Followers, 56 Following, ..." in the static
+  // HTML — no API/auth needed. A block or rate-limit just yields null
+  // followers; we still return the handle/url resolved above.
+  let followers: number | null = null;
+  const profileRes = await fetchWithTimeout(
+    `https://www.instagram.com/${handle}/`,
+    {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        Accept: "text/html,application/xhtml+xml",
+      },
+    },
+  );
+  if (profileRes && profileRes.ok) {
+    try {
+      const profileHtml = await profileRes.text();
+      const followerMatch = profileHtml.match(/([\d,]+)\s+Followers/i);
+      if (followerMatch) {
+        const n = parseInt(followerMatch[1].replace(/,/g, ""), 10);
+        if (!isNaN(n)) followers = n;
+      }
+    } catch {
+      // keep followers = null
+    }
+  }
+
+  return { handle, url, followers, active: true };
+}
+
+// ===== Domain age lookup (RDAP) =============================================
+
+// Step 17 — domain registration age via rdap.org (free, public, no auth). An
+// established domain (>2y old) is a maturity/legitimacy signal. Returns nulls
+// on any failure or for businesses with no website — never throws.
+export async function getDomainAge(
+  websiteUrl: string | null | undefined,
+): Promise<{ age_years: number | null; registered_date: string | null }> {
+  const miss = { age_years: null, registered_date: null };
+  if (!websiteUrl) return miss;
+
+  let domain: string;
+  try {
+    const u = new URL(
+      websiteUrl.startsWith("http") ? websiteUrl : `https://${websiteUrl}`,
+    );
+    domain = u.hostname.replace(/^www\./, "");
+  } catch {
+    return miss;
+  }
+  if (!domain) return miss;
+
+  const res = await fetchWithTimeout(`https://rdap.org/domain/${domain}`, {
+    headers: { Accept: "application/json" },
+  });
+  if (!res || !res.ok) return miss;
+
+  let data: { events?: Array<{ eventAction?: string; eventDate?: string }> };
+  try {
+    data = (await res.json()) as typeof data;
+  } catch {
+    return miss;
+  }
+
+  const regEvent = (data.events ?? []).find(
+    (e) => e.eventAction === "registration" || e.eventAction === "registered",
+  );
+  if (!regEvent?.eventDate) return miss;
+
+  const regMs = Date.parse(regEvent.eventDate);
+  if (!Number.isFinite(regMs)) return miss;
+
+  const ageYears =
+    Math.round(((Date.now() - regMs) / (1000 * 60 * 60 * 24 * 365.25)) * 10) /
+    10;
+
+  return { age_years: ageYears, registered_date: regEvent.eventDate.split("T")[0] };
+}
+
+// ===== GSTIN extraction from website (free) ==================================
+
+// Step 17 — many Indian businesses print their GSTIN in the site footer / About
+// page. We fetch the homepage and match the 15-char GSTIN format (2-digit
+// state + 10-char PAN + entity digit + 'Z' + checksum). Finding a well-formed
+// GSTIN is treated as "registered" — real gstn.gov.in verification needs an API
+// we don't have. Returns nulls for sites with no website or no match.
+export async function findGstinFromWebsite(
+  websiteUrl: string | null | undefined,
+): Promise<{ gstin: string | null; verified: boolean }> {
+  if (!websiteUrl) return { gstin: null, verified: false };
+
+  const fullUrl = websiteUrl.startsWith("http")
+    ? websiteUrl
+    : `https://${websiteUrl}`;
+
+  const res = await fetchWithTimeout(fullUrl, {
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; WebioxBot/1.0)" },
+  });
+  if (!res || !res.ok) return { gstin: null, verified: false };
+
+  let html: string;
+  try {
+    html = await res.text();
+  } catch {
+    return { gstin: null, verified: false };
+  }
+
+  const match = html.match(/\b\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z]Z[A-Z\d]\b/);
+  if (!match) return { gstin: null, verified: false };
+
+  return { gstin: match[0], verified: true };
 }
 
 // ===== Signal stacking ======================================================
@@ -535,10 +662,19 @@ export type SignalScore = {
   running_paid_ads: boolean;
   has_instagram: boolean;
   has_verified_email: boolean;
+  // Step 17 — deep verification checks (9-11)
+  has_strong_social: boolean; // Instagram ≥500 followers
+  established_domain: boolean; // domain >2 years old
+  has_gst_registration: boolean; // GSTIN found on website
   confidence: number; // 0-100
   tier: "confirmed" | "probable" | "weak";
   reasoning: string[];
   instagram_url: string | null;
+  // Step 17 — raw deep-verification values for storage + display
+  instagram_followers: number | null;
+  instagram_handle: string | null;
+  domain_age_years: number | null;
+  gstin: string | null;
   latest_review_date: string | null;
 };
 
@@ -551,7 +687,7 @@ export type StackSignalsOpts = {
   minRating: number;
 };
 
-// Runs all 8 checks against a Google Places result and returns a weighted
+// Runs all 11 checks against a Google Places result and returns a weighted
 // 0-100 confidence score plus a tier. Franchise leads short-circuit early
 // (we don't waste API calls on rejects). Network failures inside individual
 // checks degrade to `false` for that signal rather than aborting the stack.
@@ -592,10 +728,17 @@ export async function stackSignals(
       running_paid_ads: false,
       has_instagram: false,
       has_verified_email: false,
+      has_strong_social: false,
+      established_domain: false,
+      has_gst_registration: false,
       confidence: 0,
       tier: "weak",
       reasoning,
       instagram_url: null,
+      instagram_followers: null,
+      instagram_handle: null,
+      domain_age_years: null,
+      gstin: null,
       latest_review_date: null,
     };
   }
@@ -613,9 +756,10 @@ export async function stackSignals(
   if (running_paid_ads)
     reasoning.push("Running paid ads ✓ (budget signal 🔥)");
 
-  // 7. Instagram
-  const ig = await findInstagramProfile(name, city);
-  const has_instagram = ig.active;
+  // 7. Instagram presence + follower count. One fetch powers both check 7
+  // (any active profile) and check 9 (substantial following) below.
+  const igData = await getInstagramData(name, city);
+  const has_instagram = igData.active;
   if (has_instagram) reasoning.push("Active on Instagram ✓");
 
   // 8. Email verified via Hunter — only attempted if the place has a website.
@@ -632,17 +776,48 @@ export async function stackSignals(
     }
   }
 
+  // 9. Strong social following — Instagram ≥500 followers (Step 17). Reuses the
+  // single getInstagramData fetch above; no extra network call.
+  const has_strong_social = (igData.followers ?? 0) >= 500;
+  if (has_strong_social) {
+    reasoning.push(`${igData.followers} IG followers ✓`);
+  } else if (igData.handle) {
+    reasoning.push(`Has IG (${igData.followers ?? "?"}) but low follower`);
+  }
+
+  // 10. Established domain — registered >2 years ago (Step 17). Skipped (null)
+  // for businesses with no website, which is a not-a-failure, not a reject.
+  const domainInfo = raw.websiteUri
+    ? await getDomainAge(raw.websiteUri)
+    : { age_years: null as number | null, registered_date: null as string | null };
+  const established_domain = (domainInfo.age_years ?? 0) >= 2;
+  if (established_domain) reasoning.push(`Domain ${domainInfo.age_years}y old ✓`);
+
+  // 11. GST registration — GSTIN printed on the website (Step 17). Also skipped
+  // for websiteless businesses.
+  const gstInfo = raw.websiteUri
+    ? await findGstinFromWebsite(raw.websiteUri)
+    : { gstin: null as string | null, verified: false };
+  const has_gst_registration = gstInfo.verified;
+  if (has_gst_registration) reasoning.push(`GSTIN ${gstInfo.gstin} ✓`);
+
   // Weighted confidence — paid_ads is the strongest single signal, review
-  // volume next, then everything else in the 10-15 band.
+  // volume + recent reviews next. The 8 base checks sum to 80; the 3 Step 17
+  // deep-verification checks add the final 20, keeping the scale at 0-100 so
+  // the 75/50 tier thresholds (and existing leads) stay valid.
   let confidence = 0;
-  if (has_good_rating) confidence += 10;
-  if (has_review_volume) confidence += 15;
-  if (has_working_phone) confidence += 10;
-  if (not_franchise) confidence += 10;
-  if (has_recent_reviews) confidence += 15;
-  if (running_paid_ads) confidence += 20;
-  if (has_instagram) confidence += 10;
-  if (has_verified_email) confidence += 10;
+  if (has_good_rating) confidence += 8;
+  if (has_review_volume) confidence += 12;
+  if (has_working_phone) confidence += 8;
+  if (not_franchise) confidence += 8;
+  if (has_recent_reviews) confidence += 12;
+  if (running_paid_ads) confidence += 16;
+  if (has_instagram) confidence += 8;
+  if (has_verified_email) confidence += 8;
+  // Step 17 deep-verification checks — 20 points combined.
+  if (has_strong_social) confidence += 8;
+  if (established_domain) confidence += 6;
+  if (has_gst_registration) confidence += 6;
 
   const tier: SignalScore["tier"] =
     confidence >= 75 ? "confirmed" : confidence >= 50 ? "probable" : "weak";
@@ -656,10 +831,17 @@ export async function stackSignals(
     running_paid_ads,
     has_instagram,
     has_verified_email,
+    has_strong_social,
+    established_domain,
+    has_gst_registration,
     confidence,
     tier,
     reasoning,
-    instagram_url: ig.url,
+    instagram_url: igData.url,
+    instagram_followers: igData.followers,
+    instagram_handle: igData.handle,
+    domain_age_years: domainInfo.age_years,
+    gstin: gstInfo.gstin,
     latest_review_date: recentCheck.latest_review_date,
   };
 }

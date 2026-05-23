@@ -661,6 +661,9 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
           s.running_paid_ads && "Running paid ads ✓",
           s.has_instagram && "Active Instagram ✓",
           s.has_verified_email && "Email verified ✓",
+          s.has_strong_social && `${s.instagram_followers}+ IG followers ✓`,
+          s.established_domain && `${s.domain_age_years}y domain ✓`,
+          s.has_gst_registration && "GST registered ✓",
         ]
           .filter(Boolean)
           .join(" • ");
@@ -770,6 +773,12 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
           recommended_solution: toDbSolution(e.solution),
           solution_reason: whyReason,
           research_note: researchNote,
+          // Step 17 — deep verification fields
+          instagram_followers: e.signals.instagram_followers,
+          instagram_handle: e.signals.instagram_handle,
+          domain_age_years: e.signals.domain_age_years,
+          gst_verified: e.signals.has_gst_registration,
+          gstin: e.signals.gstin,
         };
 
         const { error } = await ctx.supabase
@@ -1073,6 +1082,10 @@ async function runAutomationMode(
       e.signals.running_paid_ads && "Running ads ✓",
       e.signals.has_instagram && "Active Instagram ✓",
       e.signals.has_verified_email && "Email verified ✓",
+      e.signals.has_strong_social &&
+        `${e.signals.instagram_followers}+ IG followers ✓`,
+      e.signals.established_domain && `${e.signals.domain_age_years}y domain ✓`,
+      e.signals.has_gst_registration && "GST registered ✓",
     ]
       .filter(Boolean)
       .join(" • ");
@@ -1115,6 +1128,12 @@ async function runAutomationMode(
       recommended_solution: toDbSolution(e.solution),
       solution_reason: whyReason,
       research_note: researchNote,
+      // Step 17 — deep verification fields
+      instagram_followers: e.signals.instagram_followers,
+      instagram_handle: e.signals.instagram_handle,
+      domain_age_years: e.signals.domain_age_years,
+      gst_verified: e.signals.has_gst_registration,
+      gstin: e.signals.gstin,
     };
 
     const { error } = await ctx.supabase

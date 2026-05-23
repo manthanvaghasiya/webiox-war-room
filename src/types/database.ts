@@ -348,6 +348,13 @@ export interface Lead {
   call_notes: string | null;
   follow_up_draft: string | null;
   call_decided_at: string | null;
+
+  // Step 17 — deep verification signals (Instagram followers, domain age, GST).
+  instagram_followers: number | null;
+  instagram_handle: string | null;
+  domain_age_years: number | null;
+  gst_verified: boolean | null;
+  gstin: string | null;
 }
 
 // Step 16 — outcome of the manual call Manthan makes to each lead.
