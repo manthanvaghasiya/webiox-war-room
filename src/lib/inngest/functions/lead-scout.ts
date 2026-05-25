@@ -3,7 +3,6 @@ import { createClient } from "@supabase/supabase-js";
 import { inngest, leadScoutEvent } from "../client";
 import { runAgent, type AgentContext } from "@/lib/agents/runner";
 import {
-  GUJARAT_CITIES,
   VERTICALS,
   buildCallScript,
   detectSolutionForLead,
@@ -13,11 +12,14 @@ import {
   type DetectedSolution,
   type PlacesRaw,
   type SignalScore,
+  type VerticalConfig,
 } from "@/lib/agents/google-places-helpers";
 import { generateWhyReason } from "@/lib/agents/why-reason";
 import {
+  ALL_INDIA_TOP_METROS,
   AUTOMATION_CITIES,
   AUTOMATION_VERTICALS,
+  CITY_OPTIONS,
   type LeadChannel,
   type LeadLanguage,
   type LeadSegment,
@@ -409,7 +411,7 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
       const { data: settings } = await ctx.supabase
         .from("settings")
         .select(
-          "target_vertical, search_cities, min_rating, min_reviews, max_results_per_run, custom_keyword, exclude_franchises, require_preowned_keyword, prioritize_no_website, target_solutions, automation_mode, automation_daily_target, automation_min_confidence",
+          "target_vertical, target_state, search_cities, min_rating, min_reviews, max_results_per_run, custom_keyword, exclude_franchises, require_preowned_keyword, prioritize_no_website, target_solutions, automation_mode, automation_daily_target, automation_min_confidence",
         )
         .eq("user_id", userId)
         .single();
@@ -425,26 +427,87 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
       // then settings, then sensible defaults if the user hasn't saved yet.
       const verticalId =
         opts.vertical ?? settings?.target_vertical ?? "car_dealer";
-      const vertical = VERTICALS[verticalId];
-      if (!vertical) throw new Error(`Unknown vertical: ${verticalId}`);
 
-      const cities =
-        opts.cities ??
-        (settings?.search_cities?.length
-          ? settings.search_cities
-          : GUJARAT_CITIES);
+      // Resolve the VerticalConfig. The 'custom' vertical is synthetic — its
+      // single query is built from the user's keyword, which is REQUIRED here.
+      const rawCustomKw = settings?.custom_keyword?.trim() || null;
+      let vertical: VerticalConfig;
+      let customKeyword: string | null;
+      if (verticalId === "custom") {
+        if (!rawCustomKw) {
+          await ctx.log(
+            "Custom vertical selected but no keyword set — aborting",
+            { action: "custom_keyword_missing", level: "error" },
+          );
+          return {
+            inserted_count: 0,
+            total: 0,
+            vertical: "custom",
+            mode: "real" as const,
+          };
+        }
+        vertical = {
+          id: "custom",
+          label: `Custom: ${rawCustomKw}`,
+          textQueries: (city) => [`${rawCustomKw} ${city}`],
+          excludeKeywords: [],
+        };
+        // The synthetic vertical already encodes the keyword, so don't ALSO
+        // pass it as a query override.
+        customKeyword = null;
+      } else {
+        const preset = VERTICALS[verticalId];
+        if (!preset) throw new Error(`Unknown vertical: ${verticalId}`);
+        vertical = preset;
+        customKeyword = rawCustomKw;
+      }
+
+      // Effective city list:
+      //   1. event override wins
+      //   2. else the user's explicit city picks
+      //   3. else the top cities of the chosen state
+      //   4. else (no state) all-India top metros
+      const targetState = settings?.target_state ?? "";
+      const cities: string[] = (() => {
+        if (opts.cities?.length) return opts.cities;
+        const userCities = settings?.search_cities ?? [];
+        if (userCities.length > 0) return userCities;
+        if (targetState && CITY_OPTIONS[targetState])
+          return CITY_OPTIONS[targetState];
+        return [...ALL_INDIA_TOP_METROS];
+      })();
+
+      await ctx.log(
+        `Effective city list (${cities.length}): ${cities.join(", ")}`,
+        {
+          action: "cities_resolved",
+          metadata: {
+            cities,
+            mode: targetState ? "state" : "all_india",
+            state: targetState || null,
+          },
+        },
+      );
+
       const minReviews = settings?.min_reviews ?? 100;
       const minRating = settings?.min_rating
         ? Number(settings.min_rating)
         : 4.0;
       const maxResults = settings?.max_results_per_run ?? 50;
-      const customKeyword = settings?.custom_keyword?.trim() || null;
       const excludeFranchises = settings?.exclude_franchises ?? true;
       const requirePreowned = settings?.require_preowned_keyword ?? false;
       const prioritizeNoWebsite = settings?.prioritize_no_website ?? true;
 
+      // Franchise + pre-owned-keyword filters are car-dealer-specific. For
+      // every other vertical (including custom) they don't apply, so the scout
+      // doesn't silently drop legitimate non-dealer leads.
+      const effectiveExclude =
+        verticalId === "car_dealer" ? excludeFranchises : false;
+      const effectiveRequirePreowned =
+        verticalId === "car_dealer" ? requirePreowned : false;
+
       await ctx.log(
-        `Hunting ${vertical.label} in ${cities.join(", ")} (≥${minReviews} reviews, ≥${minRating}★, custom="${customKeyword ?? "none"}", maxResults=${maxResults}, excludeFranchises=${excludeFranchises}, requirePreowned=${requirePreowned}, prioritizeNoWebsite=${prioritizeNoWebsite})`,
+        `Hunting ${vertical.label} in ${cities.length} cities (≥${minReviews} reviews, ≥${minRating}★, custom="${customKeyword ?? "none"}", maxResults=${maxResults}, excludeFranchises=${effectiveExclude}, requirePreowned=${effectiveRequirePreowned}, prioritizeNoWebsite=${prioritizeNoWebsite})`,
         {
           action: "scout_start",
           metadata: {
@@ -454,8 +517,8 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
             minRating,
             maxResults,
             customKeyword,
-            excludeFranchises,
-            requirePreowned,
+            excludeFranchises: effectiveExclude,
+            requirePreowned: effectiveRequirePreowned,
             prioritizeNoWebsite,
           },
         },
@@ -474,8 +537,8 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
           minReviews,
           minRating,
           excludeKeywords: vertical.excludeKeywords,
-          excludeFranchises,
-          requirePreownedKeyword: requirePreowned,
+          excludeFranchises: effectiveExclude,
+          requirePreownedKeyword: effectiveRequirePreowned,
         });
         await ctx.log(`${city}: ${raws.length} found, ${filtered.length} premium`, {
           action: "city_done",
@@ -530,7 +593,7 @@ async function realLeadScout(userId: string, opts: LeadScoutEventData) {
           raw,
           city,
           vertical: verticalId,
-          excludeFranchises,
+          excludeFranchises: effectiveExclude,
           minReviews,
           minRating,
         });

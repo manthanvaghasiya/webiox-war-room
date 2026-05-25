@@ -35,14 +35,24 @@ export async function saveIcpSettings(formData: FormData) {
   );
 
   // FormData.getAll() returns one entry per checked checkbox with the same
-  // `name="search_cities"` attribute — preserves no-JS behavior.
+  // `name="search_cities"` attribute — preserves no-JS behavior. An empty list
+  // is now VALID: it means "all cities of the chosen state", or "all India" if
+  // no state is set. The Lead Scout resolves the effective list at run time.
   const cities = formData
     .getAll("search_cities")
     .map(String)
     .map((s) => s.trim())
     .filter(Boolean);
-  if (!automationMode && cities.length === 0)
-    throw new Error("Select at least one city");
+
+  // The Custom Keyword vertical is useless without a keyword — block the save
+  // (skipped under automation, which ignores the manual vertical entirely).
+  const vertical = String(formData.get("target_vertical") ?? "car_dealer");
+  const customKw = String(formData.get("custom_keyword") ?? "").trim();
+  if (!automationMode && vertical === "custom" && !customKw) {
+    throw new Error(
+      'Please type a custom keyword when "Custom Keyword" vertical is selected',
+    );
+  }
 
   const parseNum = (key: string, fallback: number): number => {
     const raw = String(formData.get(key) ?? "").trim();
@@ -65,18 +75,19 @@ export async function saveIcpSettings(formData: FormData) {
       : solutionsRaw;
 
   const country = String(formData.get("target_country") ?? "IN").trim() || "IN";
-  const state = String(formData.get("target_state") ?? "GJ").trim() || "GJ";
+  // Empty state is intentional — it means "All India (top metros)". Don't
+  // coerce it back to a default.
+  const state = String(formData.get("target_state") ?? "").trim();
 
   const updates = {
     agency_name: String(formData.get("agency_name") ?? "").trim() || null,
     sender_name: String(formData.get("sender_name") ?? "").trim() || null,
     sender_email: String(formData.get("sender_email") ?? "").trim() || null,
-    target_vertical: String(formData.get("target_vertical") ?? "car_dealer"),
-    custom_keyword:
-      String(formData.get("custom_keyword") ?? "").trim() || null,
-    // Preserve previously-saved cities when automation is on and the user
-    // submitted an empty city list (manual ICP is invisible-ignored).
-    ...(cities.length > 0 ? { search_cities: cities } : {}),
+    target_vertical: vertical,
+    custom_keyword: customKw || null,
+    // Always persist the city list, including an empty array (= all-of-state
+    // or all-India). The scout expands an empty list at run time.
+    search_cities: cities,
     min_rating: parseNum("min_rating", 4.0),
     min_reviews: Math.round(parseNum("min_reviews", 100)),
     max_results_per_run: Math.round(parseNum("max_results_per_run", 50)),

@@ -218,6 +218,7 @@ export const VERTICAL_OPTIONS = [
   { value: 'restaurant', label: '🍽️ Fine Dining Restaurants', defaultQueries: ['fine dining', 'premium restaurant', 'rooftop restaurant'] },
   { value: 'law_firm',   label: '⚖️ Law Firms', defaultQueries: ['law firm', 'advocates', 'corporate law'] },
   { value: 'jewelry',    label: '💎 Jewelry Showrooms', defaultQueries: ['jewelry showroom', 'diamond jewelry', 'gold jewelry'] },
+  { value: 'custom',     label: '✨ Custom Keyword', defaultQueries: [] },
 ] as const;
 
 // Step 14 — geography cascade.
@@ -235,27 +236,55 @@ export const STATE_OPTIONS: Record<
   Array<{ code: string; label: string; enabled: boolean }>
 > = {
   IN: [
+    { code: "", label: "All India (top 25 metros)", enabled: true }, // empty = "All"
     { code: "GJ", label: "Gujarat", enabled: true },
-    { code: "MH", label: "Maharashtra (Coming Soon)", enabled: false },
-    { code: "DL", label: "Delhi (Coming Soon)", enabled: false },
-    { code: "KA", label: "Karnataka (Coming Soon)", enabled: false },
-    { code: "TN", label: "Tamil Nadu (Coming Soon)", enabled: false },
+    { code: "MH", label: "Maharashtra", enabled: true },
+    { code: "DL", label: "Delhi", enabled: true },
+    { code: "KA", label: "Karnataka", enabled: true },
+    { code: "TN", label: "Tamil Nadu", enabled: true },
+    { code: "WB", label: "West Bengal", enabled: true },
+    { code: "UP", label: "Uttar Pradesh", enabled: true },
+    { code: "RJ", label: "Rajasthan", enabled: true },
+    { code: "TG", label: "Telangana", enabled: true },
+    { code: "KL", label: "Kerala", enabled: true },
+    { code: "MP", label: "Madhya Pradesh", enabled: true },
+    { code: "PB", label: "Punjab", enabled: true },
+    { code: "HR", label: "Haryana", enabled: true },
+    { code: "BR", label: "Bihar", enabled: true },
+    { code: "AP", label: "Andhra Pradesh", enabled: true },
+    { code: "OR", label: "Odisha", enabled: true },
+    { code: "AS", label: "Assam (Coming Soon)", enabled: false },
+    { code: "JK", label: "Jammu & Kashmir (Coming Soon)", enabled: false },
   ],
 };
 
+// Used when no state is picked (target_state empty/null) — search all India.
+export const ALL_INDIA_TOP_METROS = [
+  "Mumbai", "Delhi", "Bangalore", "Hyderabad", "Chennai", "Kolkata", "Pune",
+  "Ahmedabad", "Surat", "Vadodara", "Rajkot", "Jaipur", "Indore", "Lucknow",
+  "Kanpur", "Nagpur", "Visakhapatnam", "Bhopal", "Patna", "Ludhiana", "Agra",
+  "Coimbatore", "Madurai", "Kochi", "Chandigarh",
+] as const;
+
+// Top 20 cities per state — the Lead Scout falls back to the full list for a
+// state when the user leaves the city checkboxes empty.
 export const CITY_OPTIONS: Record<string, string[]> = {
-  GJ: [
-    "Ahmedabad",
-    "Surat",
-    "Vadodara",
-    "Rajkot",
-    "Bhavnagar",
-    "Jamnagar",
-    "Gandhinagar",
-    "Junagadh",
-    "Anand",
-    "Bharuch",
-  ],
+  GJ: ['Ahmedabad','Surat','Vadodara','Rajkot','Bhavnagar','Jamnagar','Gandhinagar','Junagadh','Anand','Bharuch','Mehsana','Nadiad','Navsari','Porbandar','Morbi','Bhuj','Patan','Veraval','Surendranagar','Dahod'],
+  MH: ['Mumbai','Pune','Nagpur','Nashik','Aurangabad','Thane','Solapur','Kolhapur','Amravati','Sangli','Jalgaon','Akola','Latur','Dhule','Ahmednagar','Chandrapur','Parbhani','Nanded','Satara','Beed'],
+  DL: ['New Delhi','Delhi','Noida','Gurgaon','Faridabad','Ghaziabad','Greater Noida','Dwarka','Rohini','Saket','Karol Bagh','Lajpat Nagar','Connaught Place','Pitampura','Janakpuri','Vasant Kunj','Hauz Khas','Mayur Vihar','Rajouri Garden','Punjabi Bagh'],
+  KA: ['Bangalore','Mysore','Hubli','Mangalore','Belgaum','Gulbarga','Davangere','Bellary','Bijapur','Shimoga','Tumkur','Raichur','Bidar','Hospet','Hassan','Gadag','Chitradurga','Udupi','Kolar','Mandya'],
+  TN: ['Chennai','Coimbatore','Madurai','Tiruchirappalli','Salem','Tiruppur','Erode','Vellore','Thoothukudi','Tirunelveli','Dindigul','Thanjavur','Nagercoil','Karur','Kanchipuram','Cuddalore','Krishnagiri','Karaikudi','Hosur','Pollachi'],
+  WB: ['Kolkata','Howrah','Asansol','Siliguri','Durgapur','Bardhaman','Malda','Baharampur','Habra','Kharagpur','Shantipur','Dankuni','Dhulian','Ranaghat','Haldia','Raiganj','Krishnanagar','Nabadwip','Medinipur','Jalpaiguri'],
+  UP: ['Lucknow','Kanpur','Ghaziabad','Agra','Varanasi','Meerut','Allahabad','Bareilly','Aligarh','Moradabad','Saharanpur','Gorakhpur','Noida','Firozabad','Loni','Jhansi','Muzaffarnagar','Mathura','Shahjahanpur','Rampur'],
+  RJ: ['Jaipur','Jodhpur','Kota','Udaipur','Ajmer','Bikaner','Alwar','Bharatpur','Sikar','Bhilwara','Pali','Sri Ganganagar','Kishangarh','Tonk','Beawar','Hanumangarh','Banswara','Dhaulpur','Sawai Madhopur','Churu'],
+  TG: ['Hyderabad','Warangal','Nizamabad','Karimnagar','Khammam','Mahbubnagar','Nalgonda','Adilabad','Suryapet','Miryalaguda','Jagtial','Mancherial','Bhongir','Vikarabad','Sangareddy','Medak','Siddipet','Wanaparthy','Kothagudem','Bhupalpally'],
+  KL: ['Kochi','Thiruvananthapuram','Kozhikode','Thrissur','Kollam','Palakkad','Alappuzha','Malappuram','Kannur','Kasaragod','Kottayam','Pathanamthitta','Idukki','Wayanad','Ernakulam','Munnar','Varkala','Guruvayur','Kovalam','Manjeri'],
+  MP: ['Bhopal','Indore','Jabalpur','Gwalior','Ujjain','Sagar','Dewas','Satna','Ratlam','Rewa','Murwara','Singrauli','Burhanpur','Khandwa','Bhind','Chhindwara','Guna','Shivpuri','Vidisha','Chhatarpur'],
+  PB: ['Ludhiana','Amritsar','Jalandhar','Patiala','Bathinda','Mohali','Pathankot','Hoshiarpur','Batala','Moga','Abohar','Malerkotla','Khanna','Phagwara','Muktsar','Barnala','Rajpura','Firozpur','Kapurthala','Sangrur'],
+  HR: ['Gurgaon','Faridabad','Panipat','Ambala','Yamunanagar','Rohtak','Hisar','Karnal','Sonipat','Panchkula','Bhiwani','Bahadurgarh','Jind','Sirsa','Thanesar','Kaithal','Rewari','Palwal','Hansi','Narnaul'],
+  BR: ['Patna','Gaya','Bhagalpur','Muzaffarpur','Darbhanga','Bihar Sharif','Arrah','Begusarai','Katihar','Munger','Chhapra','Danapur','Bettiah','Saharsa','Sasaram','Hajipur','Dehri','Siwan','Motihari','Nawada'],
+  AP: ['Visakhapatnam','Vijayawada','Guntur','Nellore','Kurnool','Rajahmundry','Tirupati','Anantapur','Kakinada','Eluru','Ongole','Chittoor','Kadapa','Machilipatnam','Adoni','Tenali','Proddatur','Hindupur','Bhimavaram','Madanapalle'],
+  OR: ['Bhubaneswar','Cuttack','Rourkela','Berhampur','Sambalpur','Puri','Balasore','Bhadrak','Baripada','Jharsuguda','Jeypore','Barbil','Khordha','Sundargarh','Rayagada','Kendrapara','Paradip','Anugul','Dhenkanal','Talcher'],
 };
 
 // Step 14 — what solutions the user wants to pitch. Drives the Lead Scout

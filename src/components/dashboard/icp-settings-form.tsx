@@ -40,7 +40,8 @@ export type IcpFormInitial = Pick<
 export function IcpSettingsForm({ initial }: { initial: IcpFormInitial }) {
   const [pending, startTransition] = useTransition();
   const [rating, setRating] = useState(initial.min_rating ?? 4.0);
-  const [error, setError] = useState<string | null>(null);
+  // Inline flag for the "custom vertical needs a keyword" guard.
+  const [kwError, setKwError] = useState(false);
 
   // ----- Automation toggle state -----
   const [automationOn, setAutomationOn] = useState(
@@ -67,7 +68,26 @@ export function IcpSettingsForm({ initial }: { initial: IcpFormInitial }) {
     });
   };
 
+  // ----- Vertical + conditional filters state -----
+  // Vertical drives which extra controls appear: a free-text keyword for
+  // `custom`, and the franchise/pre-owned toggles for `car_dealer`. The toggle
+  // values live in state so they survive being hidden and re-shown.
+  const [vertical, setVertical] = useState(
+    initial.target_vertical ?? "car_dealer",
+  );
+  const [customKw, setCustomKw] = useState(initial.custom_keyword ?? "");
+  const [excludeFranchises, setExcludeFranchises] = useState(
+    initial.exclude_franchises ?? true,
+  );
+  const [requirePreowned, setRequirePreowned] = useState(
+    initial.require_preowned_keyword ?? false,
+  );
+  const isCarDealer = vertical === "car_dealer";
+  const isCustom = vertical === "custom";
+
   // ----- Geography cascade state -----
+  // Empty `state` ("") means "All India" — search the top metros instead of a
+  // single state's cities. `target_state` may legitimately persist as "".
   const [country, setCountry] = useState(initial.target_country ?? "IN");
   const [state, setState] = useState(initial.target_state ?? "GJ");
   const [selectedCities, setSelectedCities] = useState<Set<string>>(
@@ -86,19 +106,12 @@ export function IcpSettingsForm({ initial }: { initial: IcpFormInitial }) {
     [state],
   );
 
-  // Switching countries resets state → first enabled state of new country and
-  // rechecks all cities for that state. Disabled options never become selected.
+  // Switching countries resets the cascade to "All India" (empty state, no
+  // city pre-selection) — the user then narrows down from there.
   const handleCountryChange = (next: string) => {
     setCountry(next);
-    const states = STATE_OPTIONS[next] ?? [];
-    const firstEnabled = states.find((s) => s.enabled)?.code;
-    if (firstEnabled) {
-      setState(firstEnabled);
-      setSelectedCities(new Set(CITY_OPTIONS[firstEnabled] ?? []));
-    } else {
-      setState("");
-      setSelectedCities(new Set());
-    }
+    setState("");
+    setSelectedCities(new Set());
   };
 
   // Switching state rechecks all cities for that state (sensible default; the
@@ -120,13 +133,14 @@ export function IcpSettingsForm({ initial }: { initial: IcpFormInitial }) {
   return (
     <form
       action={(formData) => {
-        // Cities are only required when automation is OFF. Automation mode
-        // ignores manual ICP settings anyway, so empty cities won't block save.
-        if (!automationOn && formData.getAll("search_cities").length === 0) {
-          setError("Select at least one city");
+        // Empty cities are valid now (= "all of state" or "all India"), so the
+        // only manual-ICP guard left is: the custom vertical needs a keyword.
+        if (!automationOn && isCustom && !customKw.trim()) {
+          setKwError(true);
+          toast.error("Custom Keyword vertical needs a keyword");
           return;
         }
-        setError(null);
+        setKwError(false);
         startTransition(async () => {
           try {
             await saveIcpSettings(formData);
@@ -202,11 +216,12 @@ export function IcpSettingsForm({ initial }: { initial: IcpFormInitial }) {
 
         {/* SECTION 2 — ICP: Target Vertical */}
         <SectionCard title="ICP · Target Vertical">
-          <Field label="Vertical" htmlFor="target_vertical">
+          <Field label="Target Vertical" htmlFor="target_vertical">
             <select
               id="target_vertical"
               name="target_vertical"
-              defaultValue={initial.target_vertical ?? "car_dealer"}
+              value={vertical}
+              onChange={(e) => setVertical(e.target.value)}
               className={selectClass}
             >
               {VERTICAL_OPTIONS.map((opt) => (
@@ -216,19 +231,37 @@ export function IcpSettingsForm({ initial }: { initial: IcpFormInitial }) {
               ))}
             </select>
           </Field>
-          <Field label="Custom keyword (optional)" htmlFor="custom_keyword">
-            <input
-              id="custom_keyword"
-              name="custom_keyword"
-              type="text"
-              defaultValue={initial.custom_keyword ?? ""}
-              placeholder="e.g. 'luxury car dealer Bopal Ahmedabad'"
-              className={inputClass}
-            />
-            <p className="mt-1 font-mono text-[10px] text-[color:var(--color-text-muted)]">
-              Leave blank to use the vertical&apos;s preset queries.
-            </p>
-          </Field>
+
+          {/* Custom keyword input — only when the Custom Keyword vertical is
+              chosen. Otherwise a hidden empty field keeps the form shape. */}
+          {isCustom ? (
+            <Field label="Custom Search Keyword" htmlFor="custom_keyword">
+              <input
+                id="custom_keyword"
+                name="custom_keyword"
+                type="text"
+                value={customKw}
+                onChange={(e) => {
+                  setCustomKw(e.target.value);
+                  if (e.target.value.trim()) setKwError(false);
+                }}
+                placeholder="e.g. luxury car dealer Mumbai, IVF clinic Hyderabad, drone seller Pune"
+                className={inputClass}
+              />
+              {kwError ? (
+                <p className="mt-1 font-mono text-[10px] text-[color:var(--color-neon-red)]">
+                  Type a keyword, or pick a preset vertical above.
+                </p>
+              ) : (
+                <p className="mt-1 font-mono text-[10px] text-[color:var(--color-text-muted)]">
+                  Replaces the vertical&apos;s preset queries. Be specific —
+                  include the business type AND a location hint.
+                </p>
+              )}
+            </Field>
+          ) : (
+            <input type="hidden" name="custom_keyword" value="" />
+          )}
         </SectionCard>
       </div>
 
@@ -314,7 +347,7 @@ export function IcpSettingsForm({ initial }: { initial: IcpFormInitial }) {
             </select>
           </Field>
 
-          <Field label="State / Region" htmlFor="target_state">
+          <Field label="State (optional)" htmlFor="target_state">
             <select
               id="target_state"
               name="target_state"
@@ -342,41 +375,45 @@ export function IcpSettingsForm({ initial }: { initial: IcpFormInitial }) {
                 ))
               )}
             </select>
+            <p className="mt-1 font-mono text-[10px] text-[color:var(--color-text-muted)]">
+              {state
+                ? `Will search top ${citiesForState.length} cities of ${
+                    statesForCountry.find((s) => s.code === state)?.label ??
+                    state
+                  }`
+                : "No state = search all India (top 25 metros)"}
+            </p>
           </Field>
 
-          <div className="space-y-1">
-            <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-[color:var(--color-text-muted)]">
-              Cities
-            </span>
-            <div className="grid grid-cols-2 gap-2">
-              {citiesForState.map((city) => (
-                <label
-                  key={city}
-                  className="flex cursor-pointer items-center gap-2 rounded-md border border-[color:var(--color-border-base)] bg-[color:var(--color-bg-base)]/40 px-3 py-2 transition hover:border-[color:var(--color-neon-green)]"
-                >
-                  <input
-                    type="checkbox"
-                    name="search_cities"
-                    value={city}
-                    checked={selectedCities.has(city)}
-                    onChange={() => toggleCity(city)}
-                    className="h-4 w-4 accent-[color:var(--color-neon-green)]"
-                  />
-                  <span className="font-mono text-xs text-[color:var(--color-text-primary)]">
-                    {city}
-                  </span>
-                </label>
-              ))}
+          {/* City checkboxes only when a state is chosen. "All India" (empty
+              state) needs no city picker — the scout uses the metro list. */}
+          {state && citiesForState.length > 0 ? (
+            <div className="space-y-1">
+              <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-[color:var(--color-text-muted)]">
+                Cities (optional — leave all checked for top {citiesForState.length})
+              </span>
+              <div className="grid max-h-64 grid-cols-2 gap-2 overflow-y-auto">
+                {citiesForState.map((city) => (
+                  <label
+                    key={city}
+                    className="flex cursor-pointer items-center gap-2 rounded-md border border-[color:var(--color-border-base)] bg-[color:var(--color-bg-base)]/40 px-3 py-2 transition hover:border-[color:var(--color-neon-green)]"
+                  >
+                    <input
+                      type="checkbox"
+                      name="search_cities"
+                      value={city}
+                      checked={selectedCities.has(city)}
+                      onChange={() => toggleCity(city)}
+                      className="h-4 w-4 accent-[color:var(--color-neon-green)]"
+                    />
+                    <span className="font-mono text-xs text-[color:var(--color-text-primary)]">
+                      {city}
+                    </span>
+                  </label>
+                ))}
+              </div>
             </div>
-            {error ? (
-              <p className="font-mono text-[11px] text-[color:var(--color-neon-red)]">
-                {error}
-              </p>
-            ) : null}
-            <p className="font-mono text-[10px] text-[color:var(--color-text-muted)]">
-              At least one city required.
-            </p>
-          </div>
+          ) : null}
         </SectionCard>
 
         {/* SECTION 5 — Premium Filters */}
@@ -432,18 +469,43 @@ export function IcpSettingsForm({ initial }: { initial: IcpFormInitial }) {
 
       {/* SECTION 6 — Filter Toggles (full width) */}
       <SectionCard title="ICP · Filter Toggles">
-        <ToggleRow
-          name="exclude_franchises"
-          label="Exclude franchise dealers"
-          helper="Skip NEXA, Maruti, Hyundai, Tata, Cars24, etc. Recommended for independent agency outreach."
-          defaultChecked={initial.exclude_franchises ?? true}
-        />
-        <ToggleRow
-          name="require_preowned_keyword"
-          label="Require pre-owned keyword in name"
-          helper="Only match leads with 'pre-owned' / 'used' / 'second hand' in their name. Strictest filter — turn off if you want all independents."
-          defaultChecked={initial.require_preowned_keyword ?? false}
-        />
+        {/* Franchise + pre-owned filters are car-dealer-specific. For every
+            other vertical they're hidden, but their state still submits via
+            hidden inputs so toggling away and back preserves the choice. */}
+        {isCarDealer ? (
+          <div className="space-y-4 border-l-2 border-[color:var(--color-neon-green)] pl-4">
+            <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-[color:var(--color-text-muted)]">
+              Car-dealer-specific filters
+            </p>
+            <ToggleRow
+              name="exclude_franchises"
+              label="Exclude franchise dealers"
+              helper="Skip NEXA, Maruti, Hyundai, Tata, Cars24, etc. Recommended for independent agency outreach."
+              checked={excludeFranchises}
+              onChange={setExcludeFranchises}
+            />
+            <ToggleRow
+              name="require_preowned_keyword"
+              label="Require pre-owned keyword in name"
+              helper="Only match leads with 'pre-owned' / 'used' / 'second hand' in their name. Strictest filter — turn off if you want all independents."
+              checked={requirePreowned}
+              onChange={setRequirePreowned}
+            />
+          </div>
+        ) : (
+          <>
+            <input
+              type="hidden"
+              name="exclude_franchises"
+              value={excludeFranchises ? "on" : ""}
+            />
+            <input
+              type="hidden"
+              name="require_preowned_keyword"
+              value={requirePreowned ? "on" : ""}
+            />
+          </>
+        )}
         <ToggleRow
           name="prioritize_no_website"
           label="Prioritize leads without a website"
@@ -681,23 +743,32 @@ function Field({
 
 // Native checkbox styled to look like a toggle switch. Plays nicely with
 // FormData (boolean.get(name) === 'on' when checked) and works without JS.
+// Pass `checked` + `onChange` for a controlled toggle (so its value survives
+// being conditionally hidden), or `defaultChecked` for the uncontrolled case.
 function ToggleRow({
   name,
   label,
   helper,
   defaultChecked,
+  checked,
+  onChange,
 }: {
   name: string;
   label: string;
   helper: string;
-  defaultChecked: boolean;
+  defaultChecked?: boolean;
+  checked?: boolean;
+  onChange?: (v: boolean) => void;
 }) {
+  const controlled = checked !== undefined;
   return (
     <label className="group flex cursor-pointer items-start gap-4 rounded-md border border-[color:var(--color-border-base)] bg-[color:var(--color-bg-base)]/30 p-4 transition hover:border-[color:var(--color-border-bright)]">
       <input
         type="checkbox"
         name={name}
-        defaultChecked={defaultChecked}
+        {...(controlled
+          ? { checked, onChange: (e) => onChange?.(e.target.checked) }
+          : { defaultChecked })}
         className="peer sr-only"
       />
       <span
