@@ -3,7 +3,7 @@
 // 100-token cap; degrades to a template if the API key is missing or the call
 // fails.
 
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 import type { DetectedSolution } from "./google-places-helpers";
 
@@ -20,11 +20,10 @@ export type WhyReasonOpts = {
 };
 
 export async function generateWhyReason(opts: WhyReasonOpts): Promise<string> {
-  if (process.env.ANTHROPIC_API_KEY) {
+  if (process.env.GEMINI_API_KEY) {
     try {
-      const anthropic = new Anthropic({
-        apiKey: process.env.ANTHROPIC_API_KEY,
-      });
+      const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
       const prompt = `Write ONE short sentence (max 25 words) explaining why this business needs Webiox.
 
@@ -41,15 +40,12 @@ Write the sentence as if explaining to a salesperson WHY this lead is hot. Examp
 
 Only return the sentence, no preamble.`;
 
-      const resp = await anthropic.messages.create({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 100,
-        messages: [{ role: "user", content: prompt }],
+      const resp = await model.generateContent({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { maxOutputTokens: 100 },
       });
 
-      const block = resp.content?.[0];
-      const text =
-        block && block.type === "text" ? block.text.trim() : "";
+      const text = resp.response.text().trim();
       if (text && text.length > 10) return text;
     } catch {
       // fall through to template

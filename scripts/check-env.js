@@ -37,7 +37,7 @@ console.log("\n=== Webiox War Room — Env Check ===\n");
 check("NEXT_PUBLIC_SUPABASE_URL",    true,  "Get from Supabase project settings");
 check("NEXT_PUBLIC_SUPABASE_ANON_KEY", true, "Get from Supabase project settings → API");
 check("SUPABASE_SERVICE_ROLE_KEY",   true,  "Get from Supabase project settings → API");
-check("ANTHROPIC_API_KEY",           true,  "Get from console.anthropic.com");
+check("GEMINI_API_KEY",              true,  "Get from aistudio.google.com");
 check("GOOGLE_PLACES_API_KEY",       true,  "⚡ THIS IS WHY LEADS NOT FOUND — get free key at console.cloud.google.com, enable 'Places API (New)'");
 check("HUNTER_API_KEY",              false, "Free 25/month at hunter.io — improves email finding");
 check("APOLLO_API_KEY",              false, "Free 50/month at apollo.io — improves LinkedIn leads");
@@ -49,7 +49,7 @@ const criticalMissing = [
   "NEXT_PUBLIC_SUPABASE_URL",
   "NEXT_PUBLIC_SUPABASE_ANON_KEY",
   "SUPABASE_SERVICE_ROLE_KEY",
-  "ANTHROPIC_API_KEY",
+  "GEMINI_API_KEY",
   "GOOGLE_PLACES_API_KEY",
 ].filter((k) => !env[k] || env[k].length === 0);
 

@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 import { createClient } from "@/lib/supabase/server";
 import type { CallOutcome, Lead, LeadStatus } from "@/types/database";
@@ -119,10 +119,11 @@ async function generateFollowUp(opts: {
   const { lead, outcome, notes } = opts;
   const fallback = templateFallback(lead, outcome, notes);
 
-  if (!process.env.ANTHROPIC_API_KEY) return fallback;
+  if (!process.env.GEMINI_API_KEY) return fallback;
 
   try {
-    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
     const outcomeBrief =
       outcome === "confirmed"
@@ -180,14 +181,12 @@ LANGUAGE RULES:
 
 Output ONLY the message text, nothing else. No preamble, no explanation.`;
 
-    const resp = await anthropic.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 400,
-      messages: [{ role: "user", content: prompt }],
+    const resp = await model.generateContent({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: 400 },
     });
 
-    const block = resp.content?.[0];
-    const text = block && block.type === "text" ? block.text.trim() : "";
+    const text = resp.response.text().trim();
     return text && text.length > 20 ? text : fallback;
   } catch {
     return fallback;
