@@ -51,7 +51,7 @@ export default async function SettingsPage() {
     agency_name: settings?.agency_name ?? "Webiox",
     sender_name: settings?.sender_name ?? null,
     sender_email: settings?.sender_email ?? null,
-    target_vertical: settings?.target_vertical ?? "car_dealer",
+    target_vertical: settings?.target_vertical ?? "real_estate",
     custom_keyword: settings?.custom_keyword ?? null,
     search_cities: settings?.search_cities ?? defaultCities,
     min_rating: settings?.min_rating ?? 4.0,

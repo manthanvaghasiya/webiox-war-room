@@ -1020,32 +1020,45 @@ export function buildCallScript(
     ? "Premium business website refresh + SEO"
     : "Premium business website (નવી) + SEO";
 
-  const offeringHinglish =
-    `Hum 2 kaam karte hain Webiox mein:\n` +
-    `1. ${websiteLabelH}\n` +
-    `2. Custom business software / CRM — leads, inventory, customer database manage karne ke liye`;
-  const offeringEnglish =
-    `At Webiox we do two things:\n` +
-    `1. ${websiteLabelE}\n` +
-    `2. Custom business software / CRM — to manage leads, inventory and your customer database`;
-  const offeringGujarati =
-    `Webiox માં અમે 2 કામ કરીએ છીએ:\n` +
-    `1. ${websiteLabelG}\n` +
-    `2. Custom business software / CRM — leads, inventory અને customer database manage કરવા માટે`;
+  const offeringHinglish = lead.vertical === "real_estate"
+    ? `Hum 2 kaam karte hain Webiox mein:\n1. Premium real estate project website + SEO\n2. Property CRM — inquiries, site visits, aur leads manage karne ke liye`
+    : `Hum 2 kaam karte hain Webiox mein:\n` +
+      `1. ${websiteLabelH}\n` +
+      `2. Custom business software / CRM — leads, inventory, customer database manage karne ke liye`;
+
+  const offeringEnglish = lead.vertical === "real_estate"
+    ? `At Webiox we do two things:\n1. Premium real estate project websites + SEO\n2. Property CRM — to manage property inquiries, site visits, and leads`
+    : `At Webiox we do two things:\n` +
+      `1. ${websiteLabelE}\n` +
+      `2. Custom business software / CRM — to manage leads, inventory and your customer database`;
+
+  const offeringGujarati = lead.vertical === "real_estate"
+    ? `Webiox માં અમે 2 કામ કરીએ છીએ:\n1. Premium real estate project website + SEO\n2. Property CRM — property inquiries અને site visits manage કરવા માટે`
+    : `Webiox માં અમે 2 કામ કરીએ છીએ:\n` +
+      `1. ${websiteLabelG}\n` +
+      `2. Custom business software / CRM — leads, inventory અને customer database manage કરવા માટે`;
 
   // Case study — Sadguru Cars Surat for car dealers, generic Surat business
   // otherwise. Either way it's a dual-deliverable case study now.
   const caseStudyHinglish =
     lead.vertical === "car_dealer"
       ? `Sadguru Cars Surat ke liye recently dono kaam kiya — ${caseStudyUrl} par dekh sakte ho. Unke WhatsApp leads 3x ho gaye aur internal management bhi smooth ho gaya.`
+      : lead.vertical === "real_estate"
+      ? `Recently ek builder ke liye website aur property CRM banaya hai. Unki online inquiries badh gayi aur lead management smooth ho gaya.`
       : `Recently ek Surat business ke liye dono kaam kiya — ${caseStudyUrl} par dekh sakte ho. WhatsApp leads 3x ho gaye aur internal management bhi smooth ho gaya.`;
+
   const caseStudyEnglish =
     lead.vertical === "car_dealer"
       ? `We recently shipped both for Sadguru Cars Surat — you can see it at ${caseStudyUrl}. Their WhatsApp inquiries 3x'd and their internal ops got a lot smoother.`
+      : lead.vertical === "real_estate"
+      ? `We recently built a project website and property CRM for a builder. Their online inquiries increased and lead management became much smoother.`
       : `We recently shipped both for a Surat business — you can see it at ${caseStudyUrl}. Their WhatsApp leads 3x'd and their internal ops became much smoother.`;
+
   const caseStudyGujarati =
     lead.vertical === "car_dealer"
       ? `તાજેતરમાં Sadguru Cars Surat માટે બંને કામ કર્યા — ${caseStudyUrl} પર જોઈ શકો. એમના WhatsApp leads 3x થઈ ગયા અને internal management પણ smooth થઈ ગયું.`
+      : lead.vertical === "real_estate"
+      ? `તાજેતરમાં એક builder માટે website અને property CRM બનાવ્યું છે. એમની online inquiries વધી ગઈ અને lead management smooth થઈ ગયું.`
       : `તાજેતરમાં એક Surat business માટે બંને કામ કર્યા — ${caseStudyUrl} પર જોઈ શકો. WhatsApp leads 3x થઈ ગયા અને internal management પણ smooth થઈ ગયું.`;
 
   const askHinglish =

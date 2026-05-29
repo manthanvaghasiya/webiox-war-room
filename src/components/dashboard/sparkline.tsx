@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { Area, AreaChart, ResponsiveContainer } from "recharts";
 
 // TODO(step-9): replace `data` with real time-series from the table this card represents.
@@ -10,8 +11,18 @@ export function Sparkline({
   data: number[];
   color: string;
 }) {
+  const [isMounted, setIsMounted] = useState(false);
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
   const points = data.map((v, i) => ({ i, v }));
   const id = `spark-${color.replace(/[^a-zA-Z0-9]/g, "")}`;
+
+  if (!isMounted) {
+    return <div className="h-12 w-full" />;
+  }
 
   return (
     <div className="h-12 w-full">

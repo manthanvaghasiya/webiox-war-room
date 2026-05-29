@@ -218,6 +218,7 @@ export const VERTICAL_OPTIONS = [
   { value: 'restaurant', label: '🍽️ Fine Dining Restaurants', defaultQueries: ['fine dining', 'premium restaurant', 'rooftop restaurant'] },
   { value: 'law_firm',   label: '⚖️ Law Firms', defaultQueries: ['law firm', 'advocates', 'corporate law'] },
   { value: 'jewelry',    label: '💎 Jewelry Showrooms', defaultQueries: ['jewelry showroom', 'diamond jewelry', 'gold jewelry'] },
+  { value: 'real_estate', label: '🏠 Real Estate Agents & Builders', defaultQueries: ['real estate builder', 'property developer', 'real estate broker'] },
   { value: 'custom',     label: '✨ Custom Keyword', defaultQueries: [] },
 ] as const;
 
@@ -308,12 +309,26 @@ export const AUTOMATION_VERTICALS = [
 
 export const AUTOMATION_CITIES = {
   tier1: [
-    "Ahmedabad",
-    "Surat",
-    "Vadodara",
-    "Rajkot",
-    "Bhavnagar",
-    "Gandhinagar",
+    'Ahmedabad',
+    'Surat',
+    'Vadodara',
+    'Rajkot',
+    'Bhavnagar',
+    'Jamnagar',
+    'Gandhinagar',
+    'Junagadh',
+    'Anand',
+    'Bharuch',
+    'Mehsana',
+    'Nadiad',
+    'Navsari',
+    'Porbandar',
+    'Morbi',
+    'Bhuj',
+    'Patan',
+    'Veraval',
+    'Surendranagar',
+    'Dahod',
   ],
   tier2: [
     "Mumbai",
