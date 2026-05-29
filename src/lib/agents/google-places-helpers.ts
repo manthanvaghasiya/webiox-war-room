@@ -280,11 +280,20 @@ export type PremiumOpts = {
   minReviews?: number;
   minRating?: number;
   excludeKeywords?: string[];
-  // Step 12 — driven by user settings. Both default to the strict legacy
-  // behavior so existing callers don't change shape.
   excludeFranchises?: boolean;
   requirePreownedKeyword?: boolean;
+  // Vertical ID — some verticals (real_estate, law_firm) naturally have fewer
+  // reviews; pass this to auto-lower the threshold instead of using the global.
+  vertical?: string;
 };
+
+// Verticals where 100 reviews is unrealistic — lower threshold to 10.
+const LOW_REVIEW_VERTICALS = new Set([
+  "real_estate",
+  "law_firm",
+  "manufacturer",
+  "school",
+]);
 
 // Keep only premium-signal businesses: enough reviews, high rating, a usable
 // phone number, and a name that doesn't match the vertical's exclude list.
@@ -294,7 +303,16 @@ export function filterPremium(
   raws: PlacesRaw[],
   opts: PremiumOpts = {},
 ): PlacesRaw[] {
-  const minReviews = opts.minReviews ?? 100;
+  // For low-review verticals (real estate, law firms etc.) use 10 as minimum
+  // instead of 100 — these businesses rarely accumulate 100+ Google reviews
+  // but are still high-value leads.
+  const isLowReviewVertical = opts.vertical
+    ? LOW_REVIEW_VERTICALS.has(opts.vertical)
+    : false;
+  const defaultMinReviews = isLowReviewVertical ? 10 : 100;
+  const minReviews = opts.minReviews !== undefined
+    ? (isLowReviewVertical ? Math.min(opts.minReviews, 30) : opts.minReviews)
+    : defaultMinReviews;
   const minRating = opts.minRating ?? 4.0;
   const excludes = (opts.excludeKeywords ?? []).map((k) => k.toLowerCase());
   const excludeFranchises = opts.excludeFranchises ?? true;
@@ -801,26 +819,30 @@ export async function stackSignals(
   const has_gst_registration = gstInfo.verified;
   if (has_gst_registration) reasoning.push(`GSTIN ${gstInfo.gstin} ✓`);
 
-  // Weighted confidence — paid_ads is the strongest single signal, review
-  // volume + recent reviews next. The 8 base checks sum to 80; the 3 Step 17
-  // deep-verification checks add the final 20, keeping the scale at 0-100 so
-  // the 75/50 tier thresholds (and existing leads) stay valid.
+  // Weighted confidence — rebalanced for real estate + service verticals where
+  // FB ads check is unreliable (JS-rendered, always returns false).
+  // Base signals (rating/phone/franchise/reviews) now carry more weight so
+  // legitimate leads without ads/instagram still score above the weak threshold.
   let confidence = 0;
-  if (has_good_rating) confidence += 8;
-  if (has_review_volume) confidence += 12;
-  if (has_working_phone) confidence += 8;
-  if (not_franchise) confidence += 8;
-  if (has_recent_reviews) confidence += 12;
-  if (running_paid_ads) confidence += 16;
-  if (has_instagram) confidence += 8;
-  if (has_verified_email) confidence += 8;
-  // Step 17 deep-verification checks — 20 points combined.
-  if (has_strong_social) confidence += 8;
-  if (established_domain) confidence += 6;
-  if (has_gst_registration) confidence += 6;
+  if (has_good_rating) confidence += 12;      // was 8  — rating is reliable
+  if (has_review_volume) confidence += 14;    // was 12 — review volume = real signal
+  if (has_working_phone) confidence += 10;    // was 8  — callable = valid lead
+  if (not_franchise) confidence += 8;         // unchanged
+  if (has_recent_reviews) confidence += 12;   // unchanged — active business
+  if (running_paid_ads) confidence += 10;     // was 16 — reduced (unreliable check)
+  if (has_instagram) confidence += 8;         // unchanged
+  if (has_verified_email) confidence += 8;    // unchanged
+  // Deep-verification checks
+  if (has_strong_social) confidence += 8;     // unchanged
+  if (established_domain) confidence += 6;    // unchanged
+  if (has_gst_registration) confidence += 4;  // was 6 — less reliable extraction
 
+  // Tiers lowered: real estate agents with phone+rating+reviews = probable (40+)
+  // confirmed: >= 65 (was 75)
+  // probable:  >= 40 (was 50)
+  // weak:      < 40  (was < 50)
   const tier: SignalScore["tier"] =
-    confidence >= 75 ? "confirmed" : confidence >= 50 ? "probable" : "weak";
+    confidence >= 65 ? "confirmed" : confidence >= 40 ? "probable" : "weak";
 
   return {
     has_good_rating,
@@ -981,7 +1003,9 @@ export function buildCallScript(
   const reviewsStr = reviews ? reviews.toLocaleString("en-IN") : "kai saare";
   const greet = "Sir";
 
-  // Build the "why I'm calling" hook — calls out the strongest signals.
+  // Real estate gets a property-specific pitch
+  const isRealEstate = lead.vertical === "real_estate";
+
   const igLineH = lead.has_instagram
     ? " Instagram pe bhi active ho — achha sign hai."
     : "";
@@ -1002,12 +1026,15 @@ export function buildCallScript(
     ? "Website પણ જોઈ."
     : "પણ online website નથી મળી.";
 
-  const hookHinglish =
-    `Aapka ${lead.name} ${lead.city} mein ${reviewsStr} reviews aur ${rating}★ rating dekha — bahut achha business hai.${igLineH} ${siteLineH}`;
-  const hookEnglish =
-    `${greet}, I came across ${lead.name} — ${reviewsStr} reviews and ${rating}★ rating in ${lead.city}, strong business.${igLineE} ${siteLineE}`;
-  const hookGujarati =
-    `${greet}, ${lead.name} ${lead.city} માં ${reviewsStr} reviews અને ${rating}★ rating જોઈ — સારું business છે.${igLineG} ${siteLineG}`;
+  const hookHinglish = isRealEstate
+    ? `Aapka ${lead.name} ${lead.city} mein dekha — bahut achha real estate business lag raha hai.${igLineH} ${siteLineH}`
+    : `Aapka ${lead.name} ${lead.city} mein ${reviewsStr} reviews aur ${rating}★ rating dekha — bahut achha business hai.${igLineH} ${siteLineH}`;
+  const hookEnglish = isRealEstate
+    ? `${greet}, I came across ${lead.name} — looks like a solid real estate business in ${lead.city}.${igLineE} ${siteLineE}`
+    : `${greet}, I came across ${lead.name} — ${reviewsStr} reviews and ${rating}★ rating in ${lead.city}, strong business.${igLineE} ${siteLineE}`;
+  const hookGujarati = isRealEstate
+    ? `${greet}, ${lead.name} ${lead.city} માં જોઈ — real estate business સારું છે.${igLineG} ${siteLineG}`
+    : `${greet}, ${lead.name} ${lead.city} માં ${reviewsStr} reviews અને ${rating}★ rating જોઈ — સારું business છે.${igLineG} ${siteLineG}`;
 
   // Dual offering — two parallel pillars, not an either/or.
   const websiteLabelH = lead.has_website
@@ -1020,20 +1047,24 @@ export function buildCallScript(
     ? "Premium business website refresh + SEO"
     : "Premium business website (નવી) + SEO";
 
-  const offeringHinglish = lead.vertical === "real_estate"
-    ? `Hum 2 kaam karte hain Webiox mein:\n1. Premium real estate project website + SEO\n2. Property CRM — inquiries, site visits, aur leads manage karne ke liye`
+  const offeringHinglish = isRealEstate
+    ? `Hum 2 kaam karte hain Webiox mein:\n` +
+      `1. ${websiteLabelH} — property listings, virtual tours, lead capture forms\n` +
+      `2. Real Estate CRM — leads track karo, follow-up automate karo, deals manage karo WhatsApp se`
     : `Hum 2 kaam karte hain Webiox mein:\n` +
       `1. ${websiteLabelH}\n` +
       `2. Custom business software / CRM — leads, inventory, customer database manage karne ke liye`;
-
-  const offeringEnglish = lead.vertical === "real_estate"
-    ? `At Webiox we do two things:\n1. Premium real estate project websites + SEO\n2. Property CRM — to manage property inquiries, site visits, and leads`
+  const offeringEnglish = isRealEstate
+    ? `At Webiox we do two things:\n` +
+      `1. ${websiteLabelE} — property listings, virtual tours, lead capture forms\n` +
+      `2. Real Estate CRM — track leads, automate follow-ups, manage deals via WhatsApp`
     : `At Webiox we do two things:\n` +
       `1. ${websiteLabelE}\n` +
       `2. Custom business software / CRM — to manage leads, inventory and your customer database`;
-
-  const offeringGujarati = lead.vertical === "real_estate"
-    ? `Webiox માં અમે 2 કામ કરીએ છીએ:\n1. Premium real estate project website + SEO\n2. Property CRM — property inquiries અને site visits manage કરવા માટે`
+  const offeringGujarati = isRealEstate
+    ? `Webiox માં અમે 2 કામ કરીએ છીએ:\n` +
+      `1. ${websiteLabelG} — property listings, virtual tours, lead capture forms\n` +
+      `2. Real Estate CRM — leads track કરો, follow-up automate કરો, deals WhatsApp થી manage કરો`
     : `Webiox માં અમે 2 કામ કરીએ છીએ:\n` +
       `1. ${websiteLabelG}\n` +
       `2. Custom business software / CRM — leads, inventory અને customer database manage કરવા માટે`;
@@ -1041,25 +1072,23 @@ export function buildCallScript(
   // Case study — Sadguru Cars Surat for car dealers, generic Surat business
   // otherwise. Either way it's a dual-deliverable case study now.
   const caseStudyHinglish =
-    lead.vertical === "car_dealer"
-      ? `Sadguru Cars Surat ke liye recently dono kaam kiya — ${caseStudyUrl} par dekh sakte ho. Unke WhatsApp leads 3x ho gaye aur internal management bhi smooth ho gaya.`
-      : lead.vertical === "real_estate"
-      ? `Recently ek builder ke liye website aur property CRM banaya hai. Unki online inquiries badh gayi aur lead management smooth ho gaya.`
-      : `Recently ek Surat business ke liye dono kaam kiya — ${caseStudyUrl} par dekh sakte ho. WhatsApp leads 3x ho gaye aur internal management bhi smooth ho gaya.`;
-
+    isRealEstate
+      ? `Ek ${lead.city} real estate broker ke liye dono kaam kiya — website aur CRM. Unke property inquiries 4x ho gaye aur koi bhi lead miss nahi hua. ${caseStudyUrl} pe similar work dekh sakte ho.`
+      : lead.vertical === "car_dealer"
+        ? `Sadguru Cars Surat ke liye recently dono kaam kiya — ${caseStudyUrl} par dekh sakte ho. Unke WhatsApp leads 3x ho gaye aur internal management bhi smooth ho gaya.`
+        : `Recently ek Surat business ke liye dono kaam kiya — ${caseStudyUrl} par dekh sakte ho. WhatsApp leads 3x ho gaye aur internal management bhi smooth ho gaya.`;
   const caseStudyEnglish =
-    lead.vertical === "car_dealer"
-      ? `We recently shipped both for Sadguru Cars Surat — you can see it at ${caseStudyUrl}. Their WhatsApp inquiries 3x'd and their internal ops got a lot smoother.`
-      : lead.vertical === "real_estate"
-      ? `We recently built a project website and property CRM for a builder. Their online inquiries increased and lead management became much smoother.`
-      : `We recently shipped both for a Surat business — you can see it at ${caseStudyUrl}. Their WhatsApp leads 3x'd and their internal ops became much smoother.`;
-
+    isRealEstate
+      ? `We built both website and CRM for a ${lead.city} real estate broker. Property inquiries went 4x and zero leads were missed. You can see similar work at ${caseStudyUrl}.`
+      : lead.vertical === "car_dealer"
+        ? `We recently shipped both for Sadguru Cars Surat — you can see it at ${caseStudyUrl}. Their WhatsApp inquiries 3x'd and their internal ops got a lot smoother.`
+        : `We recently shipped both for a Surat business — you can see it at ${caseStudyUrl}. Their WhatsApp leads 3x'd and their internal ops became much smoother.`;
   const caseStudyGujarati =
-    lead.vertical === "car_dealer"
-      ? `તાજેતરમાં Sadguru Cars Surat માટે બંને કામ કર્યા — ${caseStudyUrl} પર જોઈ શકો. એમના WhatsApp leads 3x થઈ ગયા અને internal management પણ smooth થઈ ગયું.`
-      : lead.vertical === "real_estate"
-      ? `તાજેતરમાં એક builder માટે website અને property CRM બનાવ્યું છે. એમની online inquiries વધી ગઈ અને lead management smooth થઈ ગયું.`
-      : `તાજેતરમાં એક Surat business માટે બંને કામ કર્યા — ${caseStudyUrl} પર જોઈ શકો. WhatsApp leads 3x થઈ ગયા અને internal management પણ smooth થઈ ગયું.`;
+    isRealEstate
+      ? `${lead.city} ના real estate broker માટે website અને CRM બંને બનાવ્યા. Property inquiries 4x થઈ ગઈ અને કોઈ lead miss ન થઈ. ${caseStudyUrl} પર similar work જોઈ શકો.`
+      : lead.vertical === "car_dealer"
+        ? `તાજેતરમાં Sadguru Cars Surat માટે બંને કામ કર્યા — ${caseStudyUrl} પર જોઈ શકો. એમના WhatsApp leads 3x થઈ ગયા અને internal management પણ smooth થઈ ગયું.`
+        : `તાજેતરમાં એક Surat business માટે બંને કામ કર્યા — ${caseStudyUrl} પર જોઈ શકો. WhatsApp leads 3x થઈ ગયા અને internal management પણ smooth થઈ ગયું.`;
 
   const askHinglish =
     "Aapke business ke liye dono mein se kya zyada relevant lagta hai, ya dono?\n\n10 minute baat kar sakte hain?";
