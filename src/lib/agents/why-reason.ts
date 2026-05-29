@@ -1,7 +1,6 @@
-// Step 14 — single-sentence "why this lead is hot" reason, shown in the WHY
-// column of the leads table. Calls Claude Haiku 4.5 (cheapest) with a tight
-// 100-token cap; degrades to a template if the API key is missing or the call
-// fails.
+// Single-sentence "why this lead is hot" reason, shown in the WHY
+// column of the leads table. Uses Gemini 1.5 Flash (free tier) with a tight
+// 100-token cap; degrades to a template if the API key is missing or the call fails.
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
