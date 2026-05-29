@@ -23,7 +23,10 @@ export async function generateWhyReason(opts: WhyReasonOpts): Promise<string> {
   if (process.env.GEMINI_API_KEY) {
     try {
       const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const model = genAI.getGenerativeModel({
+        model: "gemini-1.5-flash",
+        generationConfig: { maxOutputTokens: 100 },
+      });
 
       const prompt = `Write ONE short sentence (max 25 words) explaining why this business needs Webiox.
 
@@ -40,12 +43,8 @@ Write the sentence as if explaining to a salesperson WHY this lead is hot. Examp
 
 Only return the sentence, no preamble.`;
 
-      const resp = await model.generateContent({
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: { maxOutputTokens: 100 },
-      });
-
-      const text = resp.response.text().trim();
+      const result = await model.generateContent(prompt);
+      const text = result.response.text().trim();
       if (text && text.length > 10) return text;
     } catch {
       // fall through to template

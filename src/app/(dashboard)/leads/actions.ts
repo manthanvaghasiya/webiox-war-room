@@ -123,8 +123,10 @@ async function generateFollowUp(opts: {
 
   try {
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
+    const model = genAI.getGenerativeModel({
+      model: "gemini-1.5-flash",
+      generationConfig: { maxOutputTokens: 400 },
+    });
     const outcomeBrief =
       outcome === "confirmed"
         ? `CONFIRMED — they agreed to move forward.
@@ -181,12 +183,9 @@ LANGUAGE RULES:
 
 Output ONLY the message text, nothing else. No preamble, no explanation.`;
 
-    const resp = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 400 },
-    });
 
-    const text = resp.response.text().trim();
+    const result = await model.generateContent(prompt);
+    const text = result.response.text().trim();
     return text && text.length > 20 ? text : fallback;
   } catch {
     return fallback;
