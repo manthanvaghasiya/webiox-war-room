@@ -104,13 +104,13 @@ export const outreachManagerFn = inngest.createFunction(
               } else {
                 // No template configured — send free text (works if lead has
                 // messaged the business number first, otherwise Meta will reject).
-                const res = await sendText(phone, msg.body ?? "");
+                const res = await sendText(phone, msg.content ?? "");
                 if (res.ok) externalId = res.message_id;
                 else sendError = res.error;
               }
             } else {
               // Follow-up — within 24hr window (they replied before).
-              const res = await sendText(phone, msg.body ?? "");
+              const res = await sendText(phone, msg.content ?? "");
               if (res.ok) externalId = res.message_id;
               else sendError = res.error;
             }

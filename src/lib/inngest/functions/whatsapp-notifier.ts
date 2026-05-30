@@ -51,7 +51,7 @@ export const whatsappNotifierFn = inngest.createFunction(
     // Fetch last 3 communications (conversation so far)
     const { data: comms } = await sb
       .from("communications")
-      .select("direction, body, sent_at, channel")
+      .select("direction, content, sent_at, channel")
       .eq("lead_id", lead_id)
       .order("sent_at", { ascending: false })
       .limit(3);
@@ -64,7 +64,7 @@ export const whatsappNotifierFn = inngest.createFunction(
         const time = c.sent_at
           ? new Date(c.sent_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour12: true, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
           : "";
-        return `${who} (${time}):\n${(c.body ?? "").slice(0, 120)}${(c.body?.length ?? 0) > 120 ? "…" : ""}`;
+        return `${who} (${time}):\n${(c.content ?? "").slice(0, 120)}${(c.content?.length ?? 0) > 120 ? "…" : ""}`;
       })
       .join("\n\n");
 
@@ -74,17 +74,16 @@ export const whatsappNotifierFn = inngest.createFunction(
 
     // Signals summary
     const signals: string[] = [];
-    if (l.has_instagram) signals.push("📸 Instagram");
-    if (l.has_website) signals.push("🌐 Website");
+    if (l.instagram_handle) signals.push("📸 Instagram");
+    if (l.website) signals.push("🌐 Website");
     if ((l.review_count ?? 0) >= 100) signals.push(`⭐ ${l.review_count} reviews`);
-    if (l.running_ads) signals.push("💰 Running ads");
     const signalStr = signals.length > 0 ? signals.join(" · ") : "Phone + Rating";
 
     const message = [
       `🔥 *HOT LEAD QUALIFIED!*`,
       ``,
       `*${l.company ?? "Unknown"}*`,
-      `📍 ${l.city ?? l.location ?? "Gujarat"} · ${l.industry ?? "Real Estate"}`,
+      `📍 ${l.location ?? "Gujarat"} · ${l.industry ?? "Real Estate"}`,
       `📞 ${l.phone ?? "No phone"}`,
       l.email ? `📧 ${l.email}` : null,
       ``,

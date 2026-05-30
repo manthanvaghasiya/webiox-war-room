@@ -100,7 +100,7 @@ export async function POST(req: NextRequest) {
             lead_id: lead.id,
             direction: "inbound",
             channel: "whatsapp",
-            body: text,
+            content: text,
             status: "received",
             external_id: waMessageId,
             received_at: new Date(parseInt(msg.timestamp) * 1000).toISOString(),
