@@ -10,6 +10,7 @@ import { outreachManagerFn } from "@/lib/inngest/functions/outreach-manager";
 import { objectionHandlerFn } from "@/lib/inngest/functions/objection-handler";
 import { appointmentSetterFn } from "@/lib/inngest/functions/appointment-setter";
 import { followupSpecialistFn } from "@/lib/inngest/functions/followup-specialist";
+import { whatsappNotifierFn } from "@/lib/inngest/functions/whatsapp-notifier";
 
 export const { GET, POST, PUT } = serve({
   client: inngest,
@@ -23,5 +24,6 @@ export const { GET, POST, PUT } = serve({
     objectionHandlerFn,
     appointmentSetterFn,
     followupSpecialistFn,
+    whatsappNotifierFn,
   ],
 });

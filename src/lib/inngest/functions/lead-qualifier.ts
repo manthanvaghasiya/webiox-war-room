@@ -157,6 +157,21 @@ export const leadQualifierFn = inngest.createFunction(
               action: "promote_error",
               level: "error",
             });
+          } else {
+            // 🔔 Fire WhatsApp notification to Manthan for each qualified lead.
+            // Runs async — doesn't block the qualifier result.
+            const notifyEvents = promotions.map((p) => ({
+              name: "lead/qualified.notify" as const,
+              data: {
+                user_id: p.user_id,
+                lead_id: p.lead_id,
+                score: 70, // minimum qualifying score
+                reason: p.qualification_reason,
+              },
+            }));
+            await inngest.send(notifyEvents).catch(() => {
+              // Non-fatal — notifications best-effort
+            });
           }
         }
 
