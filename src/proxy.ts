@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 // Renamed from middleware.ts -> proxy.ts in Next 16. Same behavior:
 // runs before every matched request, here used as an optimistic auth gate.
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(
