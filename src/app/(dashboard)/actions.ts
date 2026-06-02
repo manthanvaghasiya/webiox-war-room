@@ -28,8 +28,8 @@ export async function triggerLeadScout() {
   return { ok: true as const };
 }
 
-// Real Lead Scout — hunts live Gujarat businesses via Google Places + Facebook
-// Ad Library. Can run 1-3 min server-side; the UI just fires and forgets.
+// Real Lead Scout — hunts live Gujarat businesses via Google Places.
+// Reads target_vertical from user settings so it always matches the UI.
 export async function triggerLeadScoutReal() {
   const supabase = await createClient();
   const {
@@ -37,9 +37,27 @@ export async function triggerLeadScoutReal() {
   } = await supabase.auth.getUser();
   if (!user) throw new Error("Not authenticated");
 
+  // Read vertical + cities from user settings — fall back to real_estate Gujarat
+  const { data: settings } = await supabase
+    .from("settings")
+    .select("target_vertical, automation_cities")
+    .eq("user_id", user.id)
+    .single();
+
+  const vertical = settings?.target_vertical ?? "real_estate";
+  const cities: string[] = settings?.automation_cities?.length
+    ? settings.automation_cities
+    : ["Ahmedabad", "Surat", "Vadodara", "Rajkot", "Gandhinagar"];
+
   await inngest.send({
     name: leadScoutEvent.name,
-    data: { user_id: user.id, mode: "real", vertical: "car_dealer", limit: 10 },
+    data: {
+      user_id: user.id,
+      mode: "real",
+      vertical,
+      cities,
+      limit: 50,
+    },
   });
 
   return { ok: true as const };
