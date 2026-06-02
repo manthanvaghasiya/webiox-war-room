@@ -168,7 +168,7 @@ export type PlacesRaw = {
   types?: string[];
 };
 
-const TIMEOUT_MS = 8_000;
+const TIMEOUT_MS = 25_000; // 25s — Inngest functions have long timeouts, Places API needs time
 const PLACES_FIELD_MASK = [
   "places.id",
   "places.displayName",
@@ -219,7 +219,10 @@ export async function searchPlacesForVertical(
   customKeyword?: string | null,
 ): Promise<PlacesRaw[]> {
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
-  if (!apiKey) return [];
+  if (!apiKey) {
+    console.error("[searchPlacesForVertical] GOOGLE_PLACES_API_KEY is not set — returning empty");
+    return [];
+  }
 
   const queries = getQueriesForVertical(vertical, city, customKeyword);
   const allResults: PlacesRaw[] = [];
@@ -227,6 +230,7 @@ export async function searchPlacesForVertical(
 
   for (const query of queries) {
     try {
+      console.log(`[Places] Querying: "${query}"`);
       const res = await fetchWithTimeout(
         "https://places.googleapis.com/v1/places:searchText",
         {
@@ -244,7 +248,15 @@ export async function searchPlacesForVertical(
         },
       );
 
-      if (!res || !res.ok) continue;
+      if (!res) {
+        console.error(`[Places] fetchWithTimeout returned null for query: "${query}"`);
+        continue;
+      }
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "unknown");
+        console.error(`[Places] HTTP ${res.status} for query "${query}": ${errText}`);
+        continue;
+      }
 
       let data: { places?: PlacesRaw[] };
       try {
