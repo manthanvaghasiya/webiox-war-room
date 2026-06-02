@@ -96,4 +96,5 @@ export const followupSpecialistEvent = eventType(
 
 export const inngest = new Inngest({
   id: "webiox-war-room",
+  eventKey: process.env.INNGEST_EVENT_KEY,
 });

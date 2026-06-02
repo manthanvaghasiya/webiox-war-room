@@ -12,6 +12,8 @@ import { appointmentSetterFn } from "@/lib/inngest/functions/appointment-setter"
 import { followupSpecialistFn } from "@/lib/inngest/functions/followup-specialist";
 import { whatsappNotifierFn } from "@/lib/inngest/functions/whatsapp-notifier";
 
+export const maxDuration = 300; // 5 min — lead scout needs time to scan 20 cities
+
 export const { GET, POST, PUT } = serve({
   client: inngest,
   functions: [
@@ -26,4 +28,5 @@ export const { GET, POST, PUT } = serve({
     followupSpecialistFn,
     whatsappNotifierFn,
   ],
+  signingKey: process.env.INNGEST_SIGNING_KEY,
 });
