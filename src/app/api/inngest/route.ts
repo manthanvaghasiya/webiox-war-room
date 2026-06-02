@@ -28,5 +28,4 @@ export const { GET, POST, PUT } = serve({
     followupSpecialistFn,
     whatsappNotifierFn,
   ],
-  signingKey: process.env.INNGEST_SIGNING_KEY,
 });
